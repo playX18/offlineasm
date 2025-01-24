@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "offlineasm",
+    "offlineasm-proc",
+]
+
+default-members = ["offlineasm"]
+resolver = "2"

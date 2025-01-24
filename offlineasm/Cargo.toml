@@ -1,0 +1,7 @@
+[package]
+name = "offlineasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+offlineasm-proc = { path = "../offlineasm-proc" }
