@@ -3,7 +3,6 @@ use proc_macro2::Span;
 use syn::Abi;
 use syn::ForeignItemFn;
 use std::cell::Cell;
-use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
@@ -12,7 +11,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use syn::punctuated::Punctuated;
-use syn::Signature;
 use syn::{Ident, LitStr, Path, Token};
 
 use crate::x86::SpecialRegister;

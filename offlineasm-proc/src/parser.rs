@@ -1,7 +1,6 @@
 use super::ast::*;
 use regex::Regex;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::sync::LazyLock;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
