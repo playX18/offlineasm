@@ -1,16 +1,18 @@
 #![allow(dead_code)]
 use proc_macro2::Span;
-use syn::Abi;
-use syn::ForeignItemFn;
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use syn::punctuated::Punctuated;
+use syn::Abi;
+use syn::ForeignItemFn;
 use syn::{Ident, LitStr, Path, Token};
 
 use crate::x86::SpecialRegister;
@@ -867,8 +869,67 @@ impl Display for Export {
     }
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Copy, Debug)]
+pub enum TmpKind {
+    Gpr,
+    Fpr,
+    Vec,
+}
+
+static TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+pub struct Tmp {
+    pub kind: TmpKind,
+    pub id: usize,
+    pub first_mention: Cell<usize>,
+    pub last_mention: Cell<usize>,
+    pub register: RefCell<Option<Node>>,
+}
+
+impl Tmp {
+    pub fn new(kind: TmpKind) -> Rc<Self> {
+        Rc::new(Self {
+            kind,
+            id: TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            first_mention: Cell::new(usize::MAX),
+            last_mention: Cell::new(usize::MAX),
+            register: RefCell::new(None),
+        })
+    }
+
+    pub fn mention(&self, position: usize) {
+        if self.first_mention.get() == usize::MAX || position < self.first_mention.get() {
+            self.first_mention.set(position);
+        }
+
+        if self.last_mention.get() == usize::MAX || position > self.last_mention.get() {
+            self.last_mention.set(position);
+        }
+    }
+
+    pub fn replace_temporaries_with_registers(self: &Rc<Self>, kind: TmpKind) -> syn::Result<Node> {
+        if self.kind == kind {
+            self.register
+                .borrow()
+                .as_ref()
+                .map(|node| node.clone())
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "temporary register not set"))
+        } else {
+            Ok(Node::Tmp(self.clone()))
+        }
+    }
+}
+
+impl Display for Tmp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tmp{}", self.id)?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub enum Node {
+    Tmp(Rc<Tmp>),
     Export(Export),
     IfThenElse(IfThenElse),
     Macro(Macro),
@@ -900,7 +961,7 @@ pub enum Node {
     LocalLabelReference(LocalLabelReference),
     Label(Arc<Label>),
     LocalLabel(Arc<LocalLabel>),
-    Seq(Punctuated<Node, Token![;]>),
+    Seq(Vec<Node>),
     True,
     False,
     And(Box<Node>, Box<Node>),
@@ -910,9 +971,56 @@ pub enum Node {
     AsmOperand(usize),
 }
 
+impl Node {
+    pub fn children(&self) -> Vec<Node> {
+        match self {
+            Node::Seq(seq) => seq.iter().cloned().collect(),
+            Node::IfThenElse(if_then_else) => {
+                let mut res = vec![];
+                res.push((*if_then_else.predicate).clone());
+                res.push((*if_then_else.then).clone());
+                if let Some(else_case) = &if_then_else.else_case {
+                    res.push((**else_case).clone());
+                }
+                res
+            }
+
+            Node::AbsoluteAddress(address) => vec![(*address.base).clone()],
+            Node::BaseIndex(base_index) => vec![
+                (*base_index.base).clone(),
+                (*base_index.index).clone(),
+                (*base_index.scale).clone(),
+                (*base_index.offset).clone(),
+            ],
+            Node::Instruction(instruction) => {
+                let mut res = vec![];
+                for op in instruction.operands.iter() {
+                    res.push((*op).clone());
+                }
+                res
+            }
+
+            _ => vec![],
+        }
+    }
+
+    pub fn flatten(&self) -> Vec<Node> {
+        let mut res = vec![self.clone()];
+        for child in self.children() {
+            res.extend(child.flatten());
+        }
+        res
+    }
+
+    pub fn filter(&self, f: impl Fn(&Node) -> bool) -> Vec<Node> {
+        self.flatten().into_iter().filter(|x| f(x)).collect()
+    }
+}
+
 impl std::fmt::Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Tmp(tmp) => write!(f, "{}", tmp)?,
             Self::AsmOperand(x) => write!(f, "{{_{}}}", x)?,
             Self::SpecialRegister(x) => {
                 write!(f, "{}", x.x86_operand(crate::x86::OperandKind::Ptr))?

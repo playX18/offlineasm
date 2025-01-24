@@ -1338,3 +1338,5 @@ pub struct sltu;
 pub struct pichdr;
 pub struct rloopCrash;
 pub struct rloopDo;
+
+pub struct bineq;

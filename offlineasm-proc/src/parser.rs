@@ -60,13 +60,31 @@ static LOCAL_LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^L([a-zA-Z0-
 pub fn is_local_label(token: &str) -> bool {
     LOCAL_LABEL.is_match(&token.to_string())
 }
+mod kw {
+    syn::custom_keyword!(export);
+}
+
+pub fn is_label(input: &ParseStream) -> bool {
+    input.peek(syn::Token![->]) || (input.peek(syn::Ident) && input.peek2(syn::Token![:]))
+}
+pub fn is_not_operand(input: &ParseStream) -> bool {
+    input.peek(syn::Token![;])
+        || input.peek(syn::Token![#])
+        || peek_instruction(input)
+        || input.peek(syn::Token![->])
+        || input.peek(syn::Token![const])
+        || input.peek(syn::Token![if])
+        || input.peek(syn::Token![macro])
+        || input.peek(kw::export)
+        || is_label(input)
+}
 
 pub struct AsmParser<'a> {
     pub settings: &'a HashMap<Ident, bool>,
 }
 impl<'a> AsmParser<'a> {
     pub fn parse_sequence_braced(&mut self, input: &mut ParseStream) -> syn::Result<Node> {
-        let mut list = Punctuated::new();
+        let mut list = Vec::new();
         let content;
         let _ = syn::braced!(content in input);
         let expr = self.parse_sequence_inner(&mut &content)?;
@@ -75,7 +93,7 @@ impl<'a> AsmParser<'a> {
     }
 
     pub fn parse_sequence_inner(&mut self, input: &mut ParseStream) -> syn::Result<Node> {
-        let mut list = Punctuated::new();
+        let mut list = Vec::new();
 
         while !input.is_empty() {
             let mut doc = None;
@@ -86,13 +104,15 @@ impl<'a> AsmParser<'a> {
                 }
                 doc = Some(collect);
             }
-            let _ = input.parse::<syn::Token![;]>()?;
+
+            //let _ = input.parse::<syn::Trken![;]>()?;
             if input.peek(syn::Token![const]) {
                 let _ = input.parse::<syn::Token![const]>()?;
                 if input.peek(syn::Ident) {
                     let variable = input.parse::<syn::Ident>()?;
                     let eq = input.parse::<syn::Token![=]>()?;
                     let value = self.parse_operand(input)?;
+                    let _ = input.parse::<syn::Token![;]>()?;
                     list.push(Node::ConstDecl(ConstDecl {
                         variable: Variable {
                             name: variable.clone(),
@@ -105,6 +125,7 @@ impl<'a> AsmParser<'a> {
                     }));
                 } else {
                     let expr = input.parse::<syn::Expr>()?;
+                    let _ =input.parse::<syn::Token![;]>()?;
                     list.push(Node::Const(Const { expr }));
                 }
             } else if input.peek(syn::Token![if]) {
@@ -200,7 +221,7 @@ impl<'a> AsmParser<'a> {
                         let name = input.parse::<syn::Ident>()?;
                         let _ = input.parse::<syn::Token![as]>()?;
                         let _ = input.parse::<syn::Token![unsafe]>()?;
-                       // let _ = input.parse::<syn::Token![extern]>()?;
+                        // let _ = input.parse::<syn::Token![extern]>()?;
                         let abi = input.parse::<syn::Abi>()?;
                         let item = input.parse::<syn::ForeignItemFn>()?;
                         list.push(Node::Export(Export {
@@ -243,7 +264,10 @@ impl<'a> AsmParser<'a> {
                                 Punctuated::new(),
                                 doc,
                             )));
-                        } else if input.peek(syn::Token![;]) || input.peek(syn::Token![#]) {
+                        } else if is_not_operand(input) {
+                            if input.peek(syn::Token![;]) {
+                                let _ = input.parse::<syn::Token![;]>()?;
+                            }
                             list.push(Node::Instruction(Instruction::new2(
                                 identifier,
                                 Punctuated::new(),
@@ -258,7 +282,10 @@ impl<'a> AsmParser<'a> {
                                 if input.is_empty() {
                                     end_of_sequence = true;
                                     break;
-                                } else if input.peek(syn::Token![;]) || input.peek(syn::Token![#]) {
+                                } else if is_not_operand(input) {
+                                    if input.peek(syn::Token![;]) {
+                                        let _ = input.parse::<syn::Token![;]>()?;
+                                    }
                                     break;
                                 } else if input.peek(syn::Token![,]) {
                                     operands.push_punct(input.parse::<syn::Token![,]>()?);
@@ -282,11 +309,6 @@ impl<'a> AsmParser<'a> {
 
                     name if is_identifier(name) => {
                         let _name = identifier.to_string();
-                        if _name.starts_with("L") {
-                            list.push(Node::LocalLabel(LocalLabel::for_name(&identifier)));
-                            input.parse::<syn::Token![:]>()?;
-                            continue;
-                        }
 
                         if input.peek(syn::token::Paren) {
                             let mut operands = Punctuated::new();
@@ -558,7 +580,7 @@ impl<'a> AsmParser<'a> {
             let expr = input.parse::<syn::Expr>()?;
             return Ok(Node::Const(Const { expr }));
         } else if input.peek(syn::Token![=>]) {
-            let _ = input.parse::<syn::Token![->]>()?;
+            let _ = input.parse::<syn::Token![=>]>()?;
             let label = input.parse::<syn::Ident>()?;
             return Ok(Node::LocalLabelReference(LocalLabelReference::new(
                 LocalLabel::for_name(&label),

@@ -62,12 +62,12 @@ impl Node {
                 } else if let Some(else_case) = &mut if_then_else.else_case.as_mut() {
                     return else_case.resolve_settings(settings);
                 } else {
-                    return Node::Seq(Punctuated::new());
+                    return Node::Seq(Vec::new());
                 }
             }
 
             Node::Seq(seq) => {
-                let mut new_list = Punctuated::new();
+                let mut new_list = Vec::new();
 
                 for item in seq.iter() {
                     let item = item.resolve_settings(settings);
@@ -415,7 +415,7 @@ impl Node {
     pub fn fresh_variables(&self, mapping: &mut HashMap<Variable, Node>) -> Node {
         match self {
             Self::Seq(seq) => {
-                let mut new_list = Punctuated::new();
+                let mut new_list = Vec::new();
                 for item in seq.iter() {
                     new_list.push(item.fresh_variables(mapping));
                 }
@@ -517,7 +517,7 @@ impl Node {
     pub fn substitute(&self, mapping: &mut HashMap<Variable, Node>) -> Node {
         match self {
             Self::Seq(seq) => {
-                let mut new_list = Punctuated::new();
+                let mut new_list = Vec::new();
                 let mut my_constants = mapping.clone();
                 for item in seq.iter() {
                     if let Node::ConstDecl(c) = item {
@@ -662,7 +662,7 @@ impl Node {
             }),
 
             Self::Seq(seq) => {
-                let mut new_list = Punctuated::new();
+                let mut new_list = Vec::new();
                 for item in seq.iter() {
                     new_list.push(item.substitute_labels(mapping));
                 }
@@ -806,7 +806,7 @@ impl Node {
                     }
                 });
 
-                let mut new_list = Punctuated::new();
+                let mut new_list = Vec::new();
 
                 seq.iter().for_each(|item| {
                     if let Node::Macro(m) = item {

@@ -1,8 +1,5 @@
 use std::{collections::HashSet, sync::LazyLock};
 
-use offlineasm_def::for_each_instruction;
-use syn::parse::ParseStream;
-/* 
 #[rustfmt::skip]
 static MACRO_INSTRUCTIONS: &[&str] = &[
 
@@ -457,17 +454,7 @@ pub static MIPS_INSTRUCTIONS: &[&str] = &[
 pub static RUST_INSTRUCTIONS: &[&str] = &[
     "rloopCrash",
     "rloopDo",
-];*/
-
-macro_rules! def_instructions {
-    ($(($target:ident => $($instruction:ident)*))*) => {
-        $(pub static $target: &[&str] = &[
-            $(stringify!($instruction)),*
-        ];)*
-    };
-}
-
-for_each_instruction!(def_instructions);
+];
 
 pub static INSTRUCTIONS: LazyLock<Vec<&str>> = LazyLock::new(|| {
     let mut instructions = Vec::new();
@@ -500,34 +487,93 @@ pub fn is_power_of_two(value: isize) -> bool {
     (value & (value - 1)) == 0
 }
 
-macro_rules! def_keywords {
-    ($(($target:ident => $($keyword:ident)*))*) => {
-        pub mod kw {
-            $($(
-                syn::custom_keyword!($keyword);
-            )*)*
+use std::io::*;
+use std::fs::*;
+
+fn main() {
+    let mut file = File::create("instructions.rs").unwrap();
+    /*
+    produces macro_rules! for_each_instruction {
+        ($m: ident) => {
+            $m! {
+                (target => $($instructions),*)
+            }
         }
-    };
-}
-
-syn::custom_keyword!(beaeqwqe);
-
-for_each_instruction!(def_keywords);
-
-
-pub fn peek_instruction(input: &ParseStream) -> bool {
-    let mut result = false;
-    macro_rules! peek_keyword {
-        ($(($target:ident => $($keyword:ident)*))*) => {
-            $(
-                result |= $(
-                    input.peek(kw::$keyword)
-                )|*;
-            )*
-        };
     }
-    
-    for_each_instruction!(peek_keyword);
+    */
 
-    result
+    let mut output = String::new();
+    let mut emitted = HashSet::new();
+    output.push_str("macro_rules! for_each_instruction {\n");
+    output.push_str("    ($m: ident) => {\n");
+    output.push_str("        $m! {\n");
+    output.push_str("            (MACRO_INSTRUCTIONS => \n");
+    for instruction in MACRO_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (X86_INSTRUCTIONS => \n");
+    for instruction in X86_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (ARM_INSTRUCTIONS => \n");
+    for instruction in ARM_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (ARM64_INSTRUCTIONS => \n");
+    for instruction in ARM64_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (RISC_INSTRUCTIONS => \n");
+    for instruction in RISC_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (MIPS_INSTRUCTIONS => \n");
+    for instruction in MIPS_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("            (RUST_INSTRUCTIONS => \n");
+    for instruction in RUST_INSTRUCTIONS {
+        if emitted.contains(instruction) {
+            continue;
+        }
+        emitted.insert(instruction);
+        output.push_str(&format!("                {}\n", instruction));
+    }
+    output.push_str("            )\n");
+    output.push_str("        }\n");
+    output.push_str("    }\n");
+    output.push_str("}\n");
+
+    let mut file = File::create("for_each_instruction.rs").unwrap();
+    file.write_all(output.as_bytes()).unwrap();
 }

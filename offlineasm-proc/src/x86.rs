@@ -1416,7 +1416,7 @@ impl Instruction {
             Node::LocalLabel(done.clone()),
         ];
 
-        let seq = Node::Seq(punc_from_vec(seq));
+        let seq = Node::Seq(seq);
 
         seq.lower(asm)?;
 
@@ -1492,7 +1492,7 @@ impl Instruction {
         )));
         seq.push(Node::LocalLabel(done.clone()));
 
-        let seq = Node::Seq(punc_from_vec(seq));
+        let seq = Node::Seq(seq);
 
         seq.lower(asm)?;
 
@@ -1554,7 +1554,7 @@ impl Instruction {
             Node::LocalLabel(skip_non_zero_case),
         ];
 
-        Node::Seq(punc_from_vec(seq)).lower(asm)?;
+        Node::Seq(seq).lower(asm)?;
         Ok(())
     }
 
@@ -1589,7 +1589,7 @@ impl Instruction {
             Node::LocalLabel(src_is_non_zero),
         ];
 
-        Node::Seq(punc_from_vec(seq)).lower(asm)?;
+        Node::Seq(seq).lower(asm)?;
         Ok(())
     }
 
@@ -2363,7 +2363,7 @@ impl Instruction {
                 self.operands[0].x86_call_operand(OperandKind::Ptr)?
             )),
             "ret" => asm.puts("ret"),
-            "break" => asm.puts("int $3"),
+            "breakpoint" => asm.puts("int $3"),
             "cieq" => self.handle_x86_int_compare_set(asm, "sete", OperandKind::Int)?,
             "cbeq" => self.handle_x86_int_compare_set(asm, "sete", OperandKind::Byte)?,
             "cpeq" => self.handle_x86_int_compare_set(asm, "sete", OperandKind::Ptr)?,

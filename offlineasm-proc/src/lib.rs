@@ -8,6 +8,7 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use syn::{braced, parse::Parse, punctuated::Punctuated, Ident, LitBool, Meta, Token};
 
+mod risc;
 mod asm;
 mod ast;
 mod doc;
@@ -16,6 +17,7 @@ mod parser;
 mod registers;
 mod transforms;
 mod x86;
+mod opt;
 
 struct ParseAsm {
     cond_constants: HashMap<Ident, bool>,
