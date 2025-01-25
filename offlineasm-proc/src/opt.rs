@@ -29,19 +29,14 @@ impl Node {
             Node::Address(address) => Ok(Node::Address(Address {
                 base: Box::new(address.base.replace_temporaries_with_registers(kind)?),
                 offset: Box::new(address.offset.replace_temporaries_with_registers(kind)?),
-                bracket_token: address.bracket_token.clone(),
             })),
             Node::AbsoluteAddress(address) => Ok(Node::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(address.base.replace_temporaries_with_registers(kind)?),
-                bracket_token: address.bracket_token.clone(),
             })),
             Node::BaseIndex(address) => Ok(Node::BaseIndex(BaseIndex {
                 base: Box::new(address.base.replace_temporaries_with_registers(kind)?),
                 index: Box::new(address.index.replace_temporaries_with_registers(kind)?),
                 scale: Box::new(address.scale.replace_temporaries_with_registers(kind)?),
-                bracket_token: address.bracket_token.clone(),
-                comma1: address.comma1.clone(),
-                comma2: address.comma2.clone(),
                 offset: Box::new(address.offset.replace_temporaries_with_registers(kind)?),
             })),
             _ => Ok(self.clone()),

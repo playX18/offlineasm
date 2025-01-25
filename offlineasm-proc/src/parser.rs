@@ -125,7 +125,7 @@ impl<'a> AsmParser<'a> {
                     }));
                 } else {
                     let expr = input.parse::<syn::Expr>()?;
-                    let _ =input.parse::<syn::Token![;]>()?;
+                    let _ = input.parse::<syn::Token![;]>()?;
                     list.push(Node::Const(Const { expr }));
                 }
             } else if input.peek(syn::Token![if]) {
@@ -422,7 +422,6 @@ impl<'a> AsmParser<'a> {
         if content.is_empty() {
             return Ok(Node::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(offset),
-                bracket_token,
             }));
         }
         let a = content.parse::<syn::Ident>()?;
@@ -431,7 +430,6 @@ impl<'a> AsmParser<'a> {
             return Ok(Node::Address(Address {
                 base: Box::new(a),
                 offset: Box::new(offset),
-                bracket_token,
             }));
         }
         let comma1 = content.parse::<syn::Token![,]>()?;
@@ -443,10 +441,7 @@ impl<'a> AsmParser<'a> {
                 base: Box::new(a),
                 index: Box::new(b),
                 scale: Box::new(Node::Immediate(Immediate { value: 1 })),
-                comma1,
                 offset: Box::new(offset),
-                comma2: None,
-                bracket_token,
             }));
         }
 
@@ -472,10 +467,7 @@ impl<'a> AsmParser<'a> {
             base: Box::new(a),
             index: Box::new(b),
             scale: Box::new(scale),
-            comma1,
             offset: Box::new(offset),
-            comma2: Some(comma2),
-            bracket_token,
         }))
     }
 

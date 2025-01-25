@@ -114,6 +114,7 @@ pub fn x86_gpr_name(name: &str, kind: OperandKind) -> syn::Result<String> {
             OperandKind::Int => return Ok(register(&format!("{}d", name))),
             OperandKind::Ptr | OperandKind::Quad => return Ok(register(name)),
             _ => {
+                
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
                     format!("invalid operand kind for GPR: {:?}", kind),
@@ -128,9 +129,10 @@ pub fn x86_gpr_name(name: &str, kind: OperandKind) -> syn::Result<String> {
             ))
         }
     }
+
     match kind {
-        OperandKind::Byte => Ok(name8),
-        OperandKind::Half => Ok(name16.to_string()),
+        OperandKind::Byte => Ok(register(&name8)),
+        OperandKind::Half => Ok(register(&name16)),
         OperandKind::Int => Ok(register(&format!("e{}", name16))),
         OperandKind::Ptr | OperandKind::Quad => Ok(register(&format!("r{}", name16))),
         _ => unreachable!("invalid operand kind for GPR: {:?}", kind),
@@ -200,14 +202,14 @@ impl FPRegisterId {
         }
         let name = self.name.to_string();
         let reg = match name.as_str() {
-            "ft0" | "fa0" | "fr" | "wfa0" => "xmm0",
-            "ft1" | "fa1" | "wfa1" => "xmm1",
-            "ft2" | "fa2" | "wfa2" => "xmm2",
-            "ft3" | "fa3" | "wfa3" => "xmm3",
-            "ft4" | "wfa4" => "xmm4",
-            "ft5" | "wfa5" => "xmm5",
-            "wfa6" => "xmm6",
-            "wfa7" => "xmm7",
+            "ft0" | "fa0" | "fr" | "wfa0" => "%xmm0",
+            "ft1" | "fa1" | "wfa1" => "%xmm1",
+            "ft2" | "fa2" | "wfa2" => "%xmm2",
+            "ft3" | "fa3" | "wfa3" => "%xmm3",
+            "ft4" | "wfa4" => "%xmm4",
+            "ft5" | "wfa5" => "%xmm5",
+            "wfa6" => "%xmm6",
+            "wfa7" => "%xmm7",
             _ => {
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
@@ -399,7 +401,7 @@ fn order_operands(operands: &[String]) -> String {
 }
 
 impl Instruction {
-    pub fn x86_operands(&self, kinds: &[OperandKind]) -> syn::Result<String> {
+    /*pub fn x86_operands(&self, kinds: &[OperandKind]) -> syn::Result<String> {
         if kinds.len() != self.operands.len() {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
@@ -413,12 +415,12 @@ impl Instruction {
 
         let mut result = Vec::new();
 
-        for (i, kind) in kinds.iter().copied().enumerate() {
+        for (i, kind) in kinds.iter().rev().copied().enumerate() {
             result.push(self.operands[i].x86_operand(kind)?);
         }
 
         Ok(result.join(",").to_string())
-    }
+    }*/
 
     pub fn x86_load_operands(
         &self,
@@ -427,8 +429,8 @@ impl Instruction {
         dst_kind: OperandKind,
     ) -> syn::Result<String> {
         Ok(order_operands(&[
-            self.operands[0].x86_load_operand(asm, src_kind, &self.operands[1])?,
-            self.operands[1].x86_operand(dst_kind)?,
+            self.operands[1].x86_load_operand(asm, src_kind, &self.operands[0])?,
+            self.operands[0].x86_operand(dst_kind)?,
         ]))
     }
 
@@ -507,15 +509,15 @@ impl Instruction {
                     "{opcode} {operands}",
                     operands = order_operands(&[
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             } else if self.operands[1] == self.operands[2] {
                 asm.puts(&format!(
                     "{opcode} {operands}",
                     operands = order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[2].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             } else {
@@ -523,16 +525,16 @@ impl Instruction {
                     "mov{suffix} {operands}",
                     suffix = Self::x86_suffix(kind),
                     operands = order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
 
                 asm.puts(&format!(
                     "{opcode} {operands}",
                     operands = order_operands(&[
-                        self.operands[1].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[2].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -543,8 +545,8 @@ impl Instruction {
             asm.puts(&format!(
                 "{opcode} {operands}",
                 operands = order_operands(&[
-                    self.operands[0].x86_operand(kind)?,
-                    self.operands[1].x86_operand(kind)?
+                    self.operands[1].x86_operand(kind)?,
+                    self.operands[0].x86_operand(kind)?
                 ])
             ));
         }
@@ -567,14 +569,14 @@ impl Instruction {
         opcode: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        if matches!(self.operands[0], Node::Immediate(_))
-            || self.operands[0].try_x86_gpr() == Some("ecx".to_string())
+        if matches!(self.operands[1], Node::Immediate(_))
+            || self.operands[1].try_x86_gpr() == Some("ecx".to_string())
         {
             asm.puts(&format!(
                 "{opcode} {operands}",
                 operands = order_operands(&[
-                    self.operands[0].x86_operand(OperandKind::Byte)?,
-                    self.operands[1].x86_operand(kind)?
+                    self.operands[1].x86_operand(OperandKind::Byte)?,
+                    self.operands[0].x86_operand(kind)?
                 ])
             ));
         } else {
@@ -582,21 +584,21 @@ impl Instruction {
                 "xchg{suffix} {operands}",
                 suffix = Self::x86_suffix(OperandKind::Ptr),
                 operands = order_operands(&[
-                    self.operands[0].x86_operand(OperandKind::Ptr)?,
+                    self.operands[1].x86_operand(OperandKind::Ptr)?,
                     x86_gpr_name("ecx", OperandKind::Ptr)?
                 ])
             ));
 
             asm.puts(&format!(
                 "{opcode} {operands}",
-                operands = order_operands(&[register("cl"), self.operands[1].x86_operand(kind)?])
+                operands = order_operands(&[register("cl"), self.operands[0].x86_operand(kind)?])
             ));
 
             asm.puts(&format!(
                 "xchg{suffix} {operands}",
                 suffix = Self::x86_suffix(OperandKind::Ptr),
                 operands = order_operands(&[
-                    self.operands[0].x86_operand(OperandKind::Ptr)?,
+                    self.operands[1].x86_operand(OperandKind::Ptr)?,
                     x86_gpr_name("ecx", OperandKind::Ptr)?
                 ])
             ));
@@ -640,32 +642,33 @@ impl Instruction {
 
     pub fn handle_x86_int_compare(
         &self,
+        opstart: usize,
         asm: &mut Assembler,
         opcode_suffix: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        if self.operands[0].is_immediate_zero()
-            && self.operands[1].is_register_id()
+        if self.operands[opstart + 1].is_immediate_zero()
+            && self.operands[opstart].is_register_id()
             && (opcode_suffix == "e" || opcode_suffix == "ne")
         {
             asm.puts(&format!(
                 "test{} {}",
                 Self::x86_suffix(kind),
                 order_operands(&[
-                    self.operands[1].x86_operand(kind)?,
-                    self.operands[1].x86_operand(kind)?
+                    self.operands[opstart].x86_operand(kind)?,
+                    self.operands[opstart].x86_operand(kind)?
                 ])
             ));
-        } else if self.operands[1].is_immediate_zero()
-            && self.operands[0].is_register_id()
+        } else if self.operands[opstart].is_immediate_zero()
+            && self.operands[opstart + 1].is_register_id()
             && (opcode_suffix == "e" || opcode_suffix == "ne")
         {
             asm.puts(&format!(
                 "test{} {}",
                 Self::x86_suffix(kind),
                 order_operands(&[
-                    self.operands[0].x86_operand(kind)?,
-                    self.operands[0].x86_operand(kind)?
+                    self.operands[opstart + 1].x86_operand(kind)?,
+                    self.operands[opstart + 1].x86_operand(kind)?
                 ])
             ));
         } else {
@@ -673,8 +676,8 @@ impl Instruction {
                 "cmp{} {}",
                 Self::x86_suffix(kind),
                 order_operands(&[
-                    self.operands[1].x86_operand(kind)?,
-                    self.operands[0].x86_operand(kind)?
+                    self.operands[opstart + 1].x86_operand(kind)?,
+                    self.operands[opstart].x86_operand(kind)?
                 ])
             ));
         }
@@ -688,7 +691,7 @@ impl Instruction {
         kind: OperandKind,
     ) -> syn::Result<()> {
         let opcode_suffix = &branch_opcode[1..branch_opcode.len() - 1];
-        self.handle_x86_int_compare(asm, opcode_suffix, kind)?;
+        self.handle_x86_int_compare(0, asm, opcode_suffix, kind)?;
         asm.puts(&format!(
             "{} {}",
             branch_opcode,
@@ -697,11 +700,16 @@ impl Instruction {
         Ok(())
     }
 
-    pub fn handle_x86_test(&self, asm: &mut Assembler, kind: OperandKind) -> syn::Result<()> {
-        let value = &self.operands[0];
+    pub fn handle_x86_test(
+        &self,
+        opstart: usize,
+        asm: &mut Assembler,
+        kind: OperandKind,
+    ) -> syn::Result<()> {
+        let value = &self.operands[opstart];
         let mask = match self.operands.len() {
             2 => Node::Immediate(Immediate { value: -1 }),
-            3 => self.operands[1].clone(),
+            3 => self.operands[opstart + 1].clone(),
             _ => {
                 return Err(syn::Error::new(
                     Span::call_site(),
@@ -743,7 +751,7 @@ impl Instruction {
         opcode: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        self.handle_x86_test(asm, kind)?;
+        self.handle_x86_test(0, asm, kind)?;
         asm.puts(&format!(
             "{} {}",
             opcode,
@@ -810,8 +818,8 @@ impl Instruction {
         set_opcode: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        self.handle_x86_test(asm, kind)?;
-        Self::handle_x86_set(asm, set_opcode, self.operands.last().unwrap())
+        self.handle_x86_test(1, asm, kind)?;
+        Self::handle_x86_set(asm, set_opcode, &self.operands[0])
     }
 
     pub fn handle_x86_op_branch(
@@ -842,18 +850,18 @@ impl Instruction {
         branch_opcode: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        if self.operands.len() == 4 && self.operands[1] == self.operands[2] {
+        if self.operands.len() == 4 && self.operands[1] == self.operands[0] {
             asm.puts(&format!(
                 "neg{} {}",
                 Self::x86_suffix(kind),
-                self.operands[2].x86_operand(kind)?
+                self.operands[0].x86_operand(kind)?
             ));
             asm.puts(&format!(
                 "add{} {}",
                 Self::x86_suffix(kind),
                 order_operands(&[
-                    self.operands[0].x86_operand(kind)?,
-                    self.operands[2].x86_operand(kind)?
+                    self.operands[2].x86_operand(kind)?,
+                    self.operands[0].x86_operand(kind)?
                 ])
             ));
         } else {
@@ -885,8 +893,8 @@ impl Instruction {
         set_opcode: &str,
         kind: OperandKind,
     ) -> syn::Result<()> {
-        self.handle_x86_int_compare(asm, &set_opcode[3..set_opcode.len() - 1], kind)?;
-        Self::handle_x86_set(asm, set_opcode, &self.operands[2])
+        self.handle_x86_int_compare(1, asm, &set_opcode[3..set_opcode.len() - 1], kind)?;
+        Self::handle_x86_set(asm, set_opcode, &self.operands[0])
     }
 
     pub fn handle_x86_fp_compare_set(
@@ -898,17 +906,17 @@ impl Instruction {
     ) -> syn::Result<()> {
         let is_special = set_opcode == "nequn" || set_opcode == "eq";
 
-        let left = &self.operands[0];
-        let right = &self.operands[1];
-        let target = &self.operands[2];
+        let target = &self.operands[0];
+        let left = &self.operands[1];
+        let right = &self.operands[2];
 
         let cmp = |asm: &mut Assembler, lhs: &Node, rhs: &Node| -> syn::Result<()> {
             asm.puts(&format!(
                 "ucomi{} {}",
                 Self::x86_suffix(kind),
                 order_operands(&[
-                    lhs.x86_operand(OperandKind::Double)?,
-                    rhs.x86_operand(OperandKind::Double)?
+                    rhs.x86_operand(OperandKind::Double)?,
+                    lhs.x86_operand(OperandKind::Double)?
                 ])
             ));
             Ok(())
@@ -926,13 +934,13 @@ impl Instruction {
                     let is_unordered = LocalLabel::unique("is_unordered");
                     asm.puts(&format!(
                         "mov{suffix} {operands}",
-                        suffix = Self::x86_suffix(kind),
+                        suffix = Self::x86_suffix(OperandKind::Quad),
                         operands =
                             order_operands(&[constant(0), target.x86_operand(OperandKind::Quad)?])
                     ));
                     cmp(asm, left, right)?;
                     asm.puts(&format!("jp {}", is_unordered.name));
-                    Self::handle_x86_set(asm, "setne", target)?;
+                    Self::handle_x86_set(asm, "sete", target)?;
                     is_unordered.lower(asm)?;
                     return Ok(());
                 }
@@ -947,13 +955,13 @@ impl Instruction {
                     let is_unordered = LocalLabel::unique("is_unordered");
                     asm.puts(&format!(
                         "mov{suffix} {operands}",
-                        suffix = Self::x86_suffix(kind),
+                        suffix = Self::x86_suffix(OperandKind::Quad),
                         operands =
                             order_operands(&[constant(0), target.x86_operand(OperandKind::Quad)?])
                     ));
                     cmp(asm, left, right)?;
                     asm.puts(&format!("jp {}", is_unordered.name));
-                    Self::handle_x86_set(asm, "sete", target)?;
+                    Self::handle_x86_set(asm, "setne", target)?;
                     is_unordered.lower(asm)?;
                     return Ok(());
                 }
@@ -963,38 +971,38 @@ impl Instruction {
         }
 
         if normal_order {
-            cmp(asm, right, left)?;
-        } else {
             cmp(asm, left, right)?;
+        } else {
+            cmp(asm, right, left)?;
         }
 
         Self::handle_x86_set(asm, set_opcode, target)
     }
 
     pub fn handle_x86_add(&self, asm: &mut Assembler, kind: OperandKind) -> syn::Result<()> {
-        if self.operands.len() == 3 && self.operands[1] == self.operands[2] {
+        if self.operands.len() == 3 && self.operands[1] == self.operands[0] {
             if !self.operands[0].is_immediate_zero() {
                 asm.puts(&format!(
                     "add{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[2].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
-        } else if self.operands.len() == 3 && self.operands[0].is_immediate() {
-            if !self.operands[1].is_register_id() || !self.operands[2].is_register_id() {
+        } else if self.operands.len() == 3 && self.operands[2].is_immediate() {
+            if !self.operands[1].is_register_id() || !self.operands[0].is_register_id() {
                 return Err(syn::Error::new(Span::call_site(), "invalid operand types"));
             }
-            if self.operands[0].is_immediate_zero() {
+            if self.operands[2].is_immediate_zero() {
                 if self.operands[1] != self.operands[2] {
                     asm.puts(&format!(
                         "mov{} {}",
                         Self::x86_suffix(kind),
                         order_operands(&[
                             self.operands[1].x86_operand(kind)?,
-                            self.operands[2].x86_operand(kind)?
+                            self.operands[0].x86_operand(kind)?
                         ])
                     ));
                 }
@@ -1004,15 +1012,15 @@ impl Instruction {
                     Self::x86_suffix(kind),
                     order_operands(&[
                         offset_register(
-                            self.operands[0].immediate_value()?,
+                            self.operands[2].immediate_value()?,
                             self.operands[1].x86_operand(kind)?
                         ),
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
-        } else if self.operands.len() == 3 && self.operands[0].is_register_id() {
-            if !self.operands[1].is_register_id() || !self.operands[2].is_register_id() {
+        } else if self.operands.len() == 3 && self.operands[2].is_register_id() {
+            if !self.operands[1].is_register_id() || !self.operands[0].is_register_id() {
                 return Err(syn::Error::new(Span::call_site(), "invalid operand types"));
             }
             if self.operands[0] == self.operands[2] {
@@ -1021,24 +1029,27 @@ impl Instruction {
                     Self::x86_suffix(kind),
                     order_operands(&[
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             } else {
                 asm.puts(&format!(
                     "lea{} ({}, {}), {}",
                     Self::x86_suffix(kind),
-                    self.operands[0].x86_operand(kind)?,
+                    self.operands[2].x86_operand(kind)?,
                     self.operands[1].x86_operand(kind)?,
-                    self.operands[2].x86_operand(kind)?
+                    self.operands[0].x86_operand(kind)?
                 ));
             }
         } else {
-            if !self.operands[0].is_immediate_zero() {
+            if !self.operands[1].is_immediate_zero() {
                 asm.puts(&format!(
                     "add{} {}",
                     Self::x86_suffix(kind),
-                    self.x86_operands(&[kind, kind])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
+                    ])
                 ));
             }
         }
@@ -1047,8 +1058,8 @@ impl Instruction {
 
     fn handle_x86_sub(&self, kind: OperandKind, asm: &mut Assembler) -> syn::Result<()> {
         if self.operands.len() == 3 {
-            if self.operands[1].is_immediate_zero() {
-                if !self.operands[0].is_register_id() || !self.operands[2].is_register_id() {
+            if self.operands[2].is_immediate_zero() {
+                if !self.operands[0].is_register_id() || !self.operands[1].is_register_id() {
                     return Err(syn::Error::new(Span::call_site(), "invalid operand types"));
                 }
                 if self.operands[0] != self.operands[2] {
@@ -1056,26 +1067,26 @@ impl Instruction {
                         "mov{} {}",
                         Self::x86_suffix(kind),
                         order_operands(&[
-                            self.operands[0].x86_operand(kind)?,
-                            self.operands[2].x86_operand(kind)?
+                            self.operands[2].x86_operand(kind)?,
+                            self.operands[0].x86_operand(kind)?
                         ])
                     ));
                 }
                 return Ok(());
             }
-            if self.operands[1] == self.operands[2] {
+            if self.operands[2] == self.operands[0] {
                 asm.puts(&format!(
                     "neg{} {}",
                     Self::x86_suffix(kind),
-                    self.operands[2].x86_operand(kind)?
+                    self.operands[0].x86_operand(kind)?
                 ));
-                if !self.operands[0].is_immediate_zero() {
+                if !self.operands[1].is_immediate_zero() {
                     asm.puts(&format!(
                         "add{} {}",
                         Self::x86_suffix(kind),
                         order_operands(&[
-                            self.operands[0].x86_operand(kind)?,
-                            self.operands[2].x86_operand(kind)?
+                            self.operands[2].x86_operand(kind)?,
+                            self.operands[0].x86_operand(kind)?
                         ])
                     ));
                 }
@@ -1084,7 +1095,7 @@ impl Instruction {
         }
 
         if self.operands.len() == 2 {
-            if self.operands[0].is_immediate_zero() {
+            if self.operands[1].is_immediate_zero() {
                 return Ok(());
             }
         }
@@ -1093,17 +1104,21 @@ impl Instruction {
     }
 
     fn handle_x86_mul(&self, kind: OperandKind, asm: &mut Assembler) -> syn::Result<()> {
-        if self.operands.len() == 3 && self.operands[0].is_immediate() {
+        if self.operands.len() == 3 && self.operands[2].is_immediate() {
             asm.puts(&format!(
                 "imul{} {}",
                 Self::x86_suffix(kind),
-                self.x86_operands(&[kind, kind, kind])?
+                order_operands(&[
+                    self.operands[2].x86_operand(kind)?,
+                    self.operands[1].x86_operand(kind)?,
+                    self.operands[0].x86_operand(kind)?
+                ])
             ));
             return Ok(());
         }
 
-        if self.operands.len() == 2 && self.operands[0].is_immediate() {
-            if let Node::Immediate(imm) = &self.operands[0] {
+        if self.operands.len() == 2 && self.operands[1].is_immediate() {
+            if let Node::Immediate(imm) = &self.operands[1] {
                 let value = imm.value;
                 if value > 0 && is_power_of_two(value) {
                     let shift = value.trailing_zeros();
@@ -1112,7 +1127,7 @@ impl Instruction {
                         Self::x86_suffix(kind),
                         order_operands(&[
                             Node::Immediate(Immediate { value: shift as _ }).x86_operand(kind)?,
-                            self.operands[1].x86_operand(kind)?
+                            self.operands[0].x86_operand(kind)?
                         ])
                     ));
                     return Ok(());
@@ -1130,8 +1145,8 @@ impl Instruction {
                     "add{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[1].x86_operand(kind)?
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1141,8 +1156,8 @@ impl Instruction {
                     Self::x86_suffix(kind),
                     order_operands(&[
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[2].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1166,8 +1181,8 @@ impl Instruction {
                     "sub{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[1].x86_operand(kind)?
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1176,9 +1191,9 @@ impl Instruction {
                     "vsub{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
+                        self.operands[2].x86_operand(kind)?,
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1202,8 +1217,8 @@ impl Instruction {
                     "mul{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[1].x86_operand(kind)?
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1212,9 +1227,9 @@ impl Instruction {
                     "vmul{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
+                        self.operands[2].x86_operand(kind)?,
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1238,8 +1253,8 @@ impl Instruction {
                     "div{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[1].x86_operand(kind)?
+                        self.operands[1].x86_operand(kind)?,
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1248,9 +1263,9 @@ impl Instruction {
                     "vdiv{} {}",
                     Self::x86_suffix(kind),
                     order_operands(&[
+                        self.operands[2].x86_operand(kind)?,
                         self.operands[1].x86_operand(kind)?,
-                        self.operands[0].x86_operand(kind)?,
-                        self.operands[2].x86_operand(kind)?
+                        self.operands[0].x86_operand(kind)?
                     ])
                 ));
             }
@@ -1270,10 +1285,10 @@ impl Instruction {
     fn handle_x86_peek(&self, asm: &mut Assembler) -> syn::Result<()> {
         let sp = RegisterId::for_name_str("sp");
         let op_a = offset_register(
-            self.operands[0].immediate_value()? * Self::x86_bytes(OperandKind::Ptr) as isize,
+            self.operands[1].immediate_value()? * Self::x86_bytes(OperandKind::Ptr) as isize,
             sp.x86_operand(OperandKind::Ptr)?,
         );
-        let op_b = self.operands[1].x86_operand(OperandKind::Ptr)?;
+        let op_b = self.operands[0].x86_operand(OperandKind::Ptr)?;
         asm.puts(&format!(
             "mov{} {}",
             Self::x86_suffix(OperandKind::Ptr),
@@ -1284,9 +1299,9 @@ impl Instruction {
 
     fn handle_x86_poke(&self, asm: &mut Assembler) -> syn::Result<()> {
         let sp = RegisterId::for_name_str("sp");
-        let op_a = self.operands[0].x86_operand(OperandKind::Ptr)?;
+        let op_a = self.operands[1].x86_operand(OperandKind::Ptr)?;
         let op_b = offset_register(
-            self.operands[1].immediate_value()? * Self::x86_bytes(OperandKind::Ptr) as isize,
+            self.operands[0].immediate_value()? * Self::x86_bytes(OperandKind::Ptr) as isize,
             sp.x86_operand(OperandKind::Ptr)?,
         );
         asm.puts(&format!(
@@ -1298,8 +1313,8 @@ impl Instruction {
     }
 
     fn handle_move(&self, asm: &mut Assembler) -> syn::Result<()> {
-        if self.operands[0].is_immediate_zero() && self.operands[1].is_register_id() {
-            let op = self.operands[1].x86_operand(OperandKind::Quad)?;
+        if self.operands[1].is_immediate_zero() && self.operands[0].is_register_id() {
+            let op = self.operands[0].x86_operand(OperandKind::Quad)?;
             asm.puts(&format!(
                 "xor{} {}, {}",
                 Self::x86_suffix(OperandKind::Quad),
@@ -1313,7 +1328,7 @@ impl Instruction {
                 asm.puts(&format!(
                     "mov{} {}",
                     Self::x86_suffix(OperandKind::Quad),
-                    order_operands(&[op0, op1])
+                    order_operands(&[op1, op0])
                 ));
             }
         }
@@ -1364,23 +1379,23 @@ impl Instruction {
         let seq = vec![
             Node::Instruction(Instruction::new(
                 id("mov"),
-                punc_from_vec(vec![neg_i64_min.clone(), gpr_scratch.clone()]),
+                punc_from_vec(vec![gpr_scratch.clone(), neg_i64_min.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("f{integer_suffix}2{floating_suffix}")),
-                punc_from_vec(vec![gpr_scratch.clone(), fpr_scratch.clone()]),
+                punc_from_vec(vec![fpr_scratch.clone(), gpr_scratch.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("b{floating_suffix}geq")),
                 punc_from_vec(vec![
-                    src.clone(),
                     fpr_scratch.clone(),
+                    src.clone(),
                     Node::LocalLabelReference(LocalLabelReference::new(slow.clone())),
                 ]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("truncate{floating_suffix}2qs")),
-                punc_from_vec(vec![src.clone(), dst.clone()]),
+                punc_from_vec(vec![dst.clone(), src.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id("jmp"),
@@ -1391,27 +1406,27 @@ impl Instruction {
             Node::LocalLabel(slow.clone()),
             Node::Instruction(Instruction::new(
                 id("mov"),
-                punc_from_vec(vec![i64_min.clone(), gpr_scratch.clone()]),
+                punc_from_vec(vec![gpr_scratch.clone(), i64_min.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("f{integer_suffix}2{floating_suffix}")),
-                punc_from_vec(vec![gpr_scratch.clone(), fpr_scratch.clone()]),
+                punc_from_vec(vec![fpr_scratch.clone(), gpr_scratch.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("add{floating_suffix}")),
-                punc_from_vec(vec![src.clone(), fpr_scratch.clone()]),
+                punc_from_vec(vec![fpr_scratch.clone(), src.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id(format!("truncate{floating_suffix}2qs")),
-                punc_from_vec(vec![fpr_scratch.clone(), dst.clone()]),
+                punc_from_vec(vec![dst.clone(), fpr_scratch.clone()]),
             )),
             Node::Instruction(Instruction::new(
                 id("mov"),
-                punc_from_vec(vec![i64_sign_bit, gpr_scratch.clone()]),
+                punc_from_vec(vec![gpr_scratch.clone(), i64_sign_bit]),
             )),
             Node::Instruction(Instruction::new(
                 id("orq"),
-                punc_from_vec(vec![gpr_scratch.clone(), dst.clone()]),
+                punc_from_vec(vec![dst.clone(), gpr_scratch.clone()]),
             )),
             Node::LocalLabel(done.clone()),
         ];
@@ -1424,9 +1439,9 @@ impl Instruction {
     }
 
     fn convert_quad_to_fp(&self, asm: &mut Assembler, kind: OperandKind) -> syn::Result<()> {
-        let src = &self.operands[0];
-        let scratch1 = &self.operands[1];
-        let dst = &self.operands[2];
+        let src = &self.operands[1];
+        let scratch1 = &self.operands[2];
+        let dst = &self.operands[0];
 
         let slow = LocalLabel::unique("slow");
         let done = LocalLabel::unique("done");
@@ -1452,7 +1467,7 @@ impl Instruction {
 
         seq.push(Node::Instruction(Instruction::new(
             id(&format!("cq2{}s", floating_suffix)),
-            punc_from_vec(vec![src.clone(), dst.clone()]),
+            punc_from_vec(vec![dst.clone(), src.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id("jmp"),
@@ -1464,27 +1479,27 @@ impl Instruction {
         seq.push(Node::LocalLabel(slow.clone()));
         seq.push(Node::Instruction(Instruction::new(
             id("mov"),
-            punc_from_vec(vec![src.clone(), scratch1.clone()]),
+            punc_from_vec(vec![scratch1.clone(), src.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id("mov"),
-            punc_from_vec(vec![src.clone(), scratch2.clone()]),
+            punc_from_vec(vec![scratch2.clone(), src.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id("urshiftq"),
-            punc_from_vec(vec![one.clone(), scratch1.clone()]),
+            punc_from_vec(vec![scratch1.clone(), one.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id("andq"),
-            punc_from_vec(vec![one.clone(), scratch2.clone()]),
+            punc_from_vec(vec![scratch2.clone(), one.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id("orq"),
-            punc_from_vec(vec![scratch1.clone(), scratch2.clone()]),
+            punc_from_vec(vec![scratch2.clone(), scratch1.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id(&format!("cq2{}s", floating_suffix)),
-            punc_from_vec(vec![scratch2.clone(), dst.clone()]),
+            punc_from_vec(vec![dst.clone(), scratch2.clone()]),
         )));
         seq.push(Node::Instruction(Instruction::new(
             id(&format!("add{}", floating_suffix)),
@@ -1526,7 +1541,10 @@ impl Instruction {
         asm.puts(&format!(
             "bsr{} {}",
             Self::x86_suffix(kind),
-            self.x86_operands(&[kind, kind])?
+            order_operands(&[
+                self.operands[1].x86_operand(kind)?,
+                self.operands[0].x86_operand(kind)?
+            ])
         ));
 
         let mut seq = vec![
@@ -1538,7 +1556,7 @@ impl Instruction {
             )),
             Node::Instruction(Instruction::new(
                 id("mov"),
-                punc_from_vec(vec![Node::Immediate(zero_value), target.clone()]),
+                punc_from_vec(vec![target.clone(), Node::Immediate(zero_value)]),
             )),
             Node::Instruction(Instruction::new(
                 id("jmp"),
@@ -1549,7 +1567,7 @@ impl Instruction {
             Node::LocalLabel(src_is_non_zero),
             Node::Instruction(Instruction::new(
                 id(xor),
-                punc_from_vec(vec![Node::Immediate(xor_value), target.clone()]),
+                punc_from_vec(vec![target.clone(), Node::Immediate(xor_value)]),
             )),
             Node::LocalLabel(skip_non_zero_case),
         ];
@@ -1572,7 +1590,10 @@ impl Instruction {
         asm.puts(&format!(
             "bsf{} {}",
             Self::x86_suffix(kind),
-            self.x86_operands(&[kind, kind])?
+            order_operands(&[
+                self.operands[1].x86_operand(kind)?,
+                self.operands[0].x86_operand(kind)?
+            ])
         ));
 
         let mut seq = vec![
@@ -1584,7 +1605,7 @@ impl Instruction {
             )),
             Node::Instruction(Instruction::new(
                 id("mov"),
-                punc_from_vec(vec![Node::Immediate(zero_value), target.clone()]),
+                punc_from_vec(vec![target.clone(), Node::Immediate(zero_value)]),
             )),
             Node::LocalLabel(src_is_non_zero),
         ];
@@ -1595,7 +1616,7 @@ impl Instruction {
 
     pub fn lower_x86(&self, asm: &mut Assembler) -> syn::Result<()> {
         let opcode = self.opcode.to_string();
-
+        println!("lower x86 {}", opcode);
         match opcode.as_str() {
             "mov" => self.handle_move(asm)?,
             "addi" => self.handle_x86_add(asm, OperandKind::Int)?,
@@ -1616,35 +1637,35 @@ impl Instruction {
                 asm.puts(&format!(
                     "neg{} {}",
                     Self::x86_suffix(OperandKind::Int),
-                    self.x86_operands(&[OperandKind::Int])?
+                    order_operands(&[self.operands[0].x86_operand(OperandKind::Int)?])
                 ));
             }
             "negp" => {
                 asm.puts(&format!(
                     "neg{} {}",
                     Self::x86_suffix(OperandKind::Ptr),
-                    self.x86_operands(&[OperandKind::Ptr])?
+                    order_operands(&[self.operands[0].x86_operand(OperandKind::Ptr)?])
                 ));
             }
             "negq" => {
                 asm.puts(&format!(
                     "neg{} {}",
                     Self::x86_suffix(OperandKind::Quad),
-                    self.x86_operands(&[OperandKind::Quad])?
+                    order_operands(&[self.operands[0].x86_operand(OperandKind::Quad)?])
                 ));
             }
             "noti" => {
                 asm.puts(&format!(
                     "not{} {}",
                     Self::x86_suffix(OperandKind::Int),
-                    self.x86_operands(&[OperandKind::Int])?
+                    order_operands(&[self.operands[0].x86_operand(OperandKind::Int)?])
                 ));
             }
             "notq" => {
                 asm.puts(&format!(
                     "not{} {}",
                     Self::x86_suffix(OperandKind::Quad),
-                    self.x86_operands(&[OperandKind::Quad])?
+                    order_operands(&[self.operands[0].x86_operand(OperandKind::Quad)?])
                 ));
             }
             "ori" => self.handle_x86_op(asm, "or", OperandKind::Int)?,
@@ -1671,14 +1692,17 @@ impl Instruction {
             "xorp" => self.handle_x86_op(asm, "xor", OperandKind::Ptr)?,
             "xorq" => self.handle_x86_op(asm, "xor", OperandKind::Quad)?,
             "leap" => {
-                Self::emit_x86_lea(asm, &self.operands[0], &self.operands[1], OperandKind::Ptr)?
+                Self::emit_x86_lea(asm, &self.operands[1], &self.operands[0], OperandKind::Ptr)?
             }
             "loadi" | "atomicloadi" => {
                 let op = self.x86_load_operands(asm, OperandKind::Int, OperandKind::Int)?;
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Int), op));
             }
             "storei" => {
-                let op = self.x86_operands(&[OperandKind::Int, OperandKind::Int])?;
+                let op = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?
+                ]);
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Int), op));
             }
             "loadis" => {
@@ -1690,7 +1714,10 @@ impl Instruction {
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Ptr), op));
             }
             "storep" => {
-                let op = self.x86_operands(&[OperandKind::Ptr, OperandKind::Ptr])?;
+                let op = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Ptr)?,
+                    self.operands[0].x86_operand(OperandKind::Ptr)?
+                ]);
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Ptr), op));
             }
 
@@ -1703,7 +1730,10 @@ impl Instruction {
                 ));
             }
             "storeq" => {
-                let op = self.x86_operands(&[OperandKind::Quad, OperandKind::Quad])?;
+                let op = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Quad)?,
+                    self.operands[0].x86_operand(OperandKind::Quad)?
+                ]);
                 asm.puts(&format!(
                     "mov{} {}",
                     Self::x86_suffix(OperandKind::Quad),
@@ -1738,56 +1768,83 @@ impl Instruction {
                 asm.puts(&format!(
                     "mov{} {}",
                     Self::x86_suffix(OperandKind::Byte),
-                    self.x86_operands(&[OperandKind::Byte, OperandKind::Byte])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Byte)?,
+                        self.operands[0].x86_operand(OperandKind::Byte)?
+                    ])
                 ));
             }
             "storeh" => {
                 asm.puts(&format!(
                     "mov{} {}",
                     Self::x86_suffix(OperandKind::Half),
-                    self.x86_operands(&[OperandKind::Half, OperandKind::Half])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Half)?,
+                        self.operands[0].x86_operand(OperandKind::Half)?
+                    ])
                 ));
             }
             "loadf" => {
                 asm.puts(&format!(
                     "movss {}",
-                    self.x86_operands(&[OperandKind::Float, OperandKind::Float])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
+                    ])
                 ));
             }
             "loadd" => {
                 asm.puts(&format!(
                     "movsd {}",
-                    self.x86_operands(&[OperandKind::Double, OperandKind::Double])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
+                    ])
                 ));
             }
             "loadv" => {
                 asm.puts(&format!(
                     "movdqu {}",
-                    self.x86_operands(&[OperandKind::Int, OperandKind::Double])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Int)?,
+                        self.operands[0].x86_operand(OperandKind::Int)?
+                    ])
                 ));
             }
             "moved" => {
                 asm.puts(&format!(
                     "movsd {}",
-                    self.x86_operands(&[OperandKind::Double, OperandKind::Double])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
+                    ])
                 ));
             }
             "storef" => {
                 asm.puts(&format!(
                     "movss {}",
-                    self.x86_operands(&[OperandKind::Float, OperandKind::Float])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
+                    ])
                 ));
             }
             "stored" => {
                 asm.puts(&format!(
                     "movsd {}",
-                    self.x86_operands(&[OperandKind::Double, OperandKind::Double])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
+                    ])
                 ));
             }
             "storev" => {
                 asm.puts(&format!(
                     "movups {}",
-                    self.x86_operands(&[OperandKind::Vector, OperandKind::Vector])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Vector)?,
+                        self.operands[0].x86_operand(OperandKind::Vector)?
+                    ])
                 ));
             }
             "addf" => self.handle_x86_add_fp(OperandKind::Float, asm)?,
@@ -1802,8 +1859,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "sqrtss {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
             }
@@ -1811,8 +1868,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "sqrtsd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
             }
@@ -1820,72 +1877,72 @@ impl Instruction {
                 asm.puts(&format!(
                     "roundss ${}, {}, {}",
                     0,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "roundd" => {
                 asm.puts(&format!(
                     "roundsd ${}, {}, {}",
                     0,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "floorf" => {
                 asm.puts(&format!(
                     "roundss ${}, {}, {}",
                     1,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "floord" => {
                 asm.puts(&format!(
                     "roundsd ${}, {}, {}",
                     1,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "ceilf" => {
                 asm.puts(&format!(
                     "roundss ${}, {}, {}",
                     2,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "ceild" => {
                 asm.puts(&format!(
                     "roundsd ${}, {}, {}",
                     2,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "truncatef" => {
                 asm.puts(&format!(
                     "roundss ${}, {}, {}",
                     3,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "truncated" => {
                 asm.puts(&format!(
                     "roundsd ${}, {}, {}",
                     3,
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?
                 ));
             }
             "truncatef2i" => {
                 asm.puts(&format!(
                     "cvttss2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Quad)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Quad)?
                     ])
                 ));
             }
@@ -1895,8 +1952,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvttsd2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Quad)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Quad)?
                     ])
                 ));
             }
@@ -1905,8 +1962,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvttss2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Int)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Int)?
                     ])
                 ));
             }
@@ -1914,8 +1971,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvttss2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Quad)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Quad)?
                     ])
                 ));
             }
@@ -1923,8 +1980,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvttsd2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Int)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Int)?
                     ])
                 ));
             }
@@ -1932,8 +1989,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvttsd2si {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Quad)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Quad)?
                     ])
                 ));
             }
@@ -1941,8 +1998,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2sd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Quad)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Quad)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
             }
@@ -1950,8 +2007,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2sd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Int)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Int)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
             }
@@ -1959,8 +2016,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2ss {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Int)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Int)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
             }
@@ -1968,8 +2025,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2ss {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Quad)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Quad)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
             }
@@ -1980,8 +2037,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2ssq {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Quad)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Quad)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
             }
@@ -1989,8 +2046,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsi2sdq {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Quad)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Quad)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
             }
@@ -1998,8 +2055,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtsd2ss {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
             }
@@ -2007,8 +2064,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "cvtss2sd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
             }
@@ -2017,8 +2074,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "ucomisd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
                 if self.operands[0] == self.operands[1] {
@@ -2041,8 +2098,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "ucomisd {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Double)?,
-                        self.operands[1].x86_operand(OperandKind::Double)?
+                        self.operands[1].x86_operand(OperandKind::Double)?,
+                        self.operands[0].x86_operand(OperandKind::Double)?
                     ])
                 ));
                 if self.operands[0] == self.operands[1] {
@@ -2066,8 +2123,8 @@ impl Instruction {
                 asm.puts(&format!(
                     "ucomiss {}",
                     order_operands(&[
-                        self.operands[0].x86_operand(OperandKind::Float)?,
-                        self.operands[1].x86_operand(OperandKind::Float)?
+                        self.operands[1].x86_operand(OperandKind::Float)?,
+                        self.operands[0].x86_operand(OperandKind::Float)?
                     ])
                 ));
                 if self.operands[0] == self.operands[1] {
@@ -2089,42 +2146,42 @@ impl Instruction {
             "btd2i" => {
                 asm.puts(&format!(
                     "cvttsd2si {}, {}",
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!(
                     "cmpl ${}, {}",
                     "80000000",
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!("je {}", self.operands[2].asm_label()?));
             }
             "td2i" => {
                 asm.puts(&format!(
                     "cvttsd2si {}, {}",
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
             }
             "bcd2i" => {
                 asm.puts(&format!(
                     "cvttsd2si {}, {}",
-                    self.operands[0].x86_operand(OperandKind::Double)?,
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!(
                     "testl {}, {}",
-                    self.operands[1].x86_operand(OperandKind::Int)?,
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[0].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!("je {}", self.operands[2].asm_label()?));
                 asm.puts(&format!(
                     "cvtsi2sd {}, %xmm7",
-                    self.operands[1].x86_operand(OperandKind::Int)?
+                    self.operands[0].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!(
                     "ucomisd {}, %xmm7",
-                    self.operands[0].x86_operand(OperandKind::Double)?
+                    self.operands[1].x86_operand(OperandKind::Double)?
                 ));
                 asm.puts(&format!("jp {}", self.operands[2].asm_label()?));
                 asm.puts(&format!("jne {}", self.operands[2].asm_label()?));
@@ -2139,13 +2196,13 @@ impl Instruction {
             }
 
             "pop" => {
-                for operand in self.operands.iter() {
+                for operand in self.operands.iter().rev() {
                     asm.puts(&format!("pop {}", operand.x86_operand(OperandKind::Ptr)?));
                 }
             }
 
             "popv" => {
-                for operand in self.operands.iter() {
+                for operand in self.operands.iter().rev() {
                     asm.puts(&format!(
                         "movdqu (%rsp), {}",
                         operand.x86_operand(OperandKind::Vector)?
@@ -2172,34 +2229,34 @@ impl Instruction {
 
             "sxi2q" => asm.puts(&format!(
                 "movslq {}, {}",
-                self.operands[0].x86_operand(OperandKind::Int)?,
-                self.operands[1].x86_operand(OperandKind::Quad)?
+                self.operands[1].x86_operand(OperandKind::Int)?,
+                self.operands[0].x86_operand(OperandKind::Quad)?
             )),
             "zxi2q" => asm.puts(&format!(
                 "mov{} {}, {}",
                 Self::x86_suffix(OperandKind::Int),
-                self.operands[0].x86_operand(OperandKind::Int)?,
-                self.operands[1].x86_operand(OperandKind::Int)?
+                self.operands[1].x86_operand(OperandKind::Int)?,
+                self.operands[0].x86_operand(OperandKind::Int)?
             )),
             "sxb2i" => asm.puts(&format!(
                 "movsbl {}, {}",
-                self.operands[0].x86_operand(OperandKind::Byte)?,
-                self.operands[1].x86_operand(OperandKind::Int)?
+                self.operands[1].x86_operand(OperandKind::Byte)?,
+                self.operands[0].x86_operand(OperandKind::Int)?
             )),
             "sxh2i" => asm.puts(&format!(
                 "movswl {}, {}",
-                self.operands[0].x86_operand(OperandKind::Half)?,
-                self.operands[1].x86_operand(OperandKind::Int)?
+                self.operands[1].x86_operand(OperandKind::Half)?,
+                self.operands[0].x86_operand(OperandKind::Int)?
             )),
             "sxb2q" => asm.puts(&format!(
                 "movsbq {}, {}",
-                self.operands[0].x86_operand(OperandKind::Byte)?,
-                self.operands[1].x86_operand(OperandKind::Quad)?
+                self.operands[1].x86_operand(OperandKind::Byte)?,
+                self.operands[0].x86_operand(OperandKind::Quad)?
             )),
             "sxh2q" => asm.puts(&format!(
                 "movswq {}, {}",
-                self.operands[0].x86_operand(OperandKind::Half)?,
-                self.operands[1].x86_operand(OperandKind::Quad)?
+                self.operands[1].x86_operand(OperandKind::Half)?,
+                self.operands[0].x86_operand(OperandKind::Quad)?
             )),
             "nop" => asm.puts("nop"),
             "bieq" => self.handle_x86_int_branch(asm, "je", OperandKind::Int)?,
@@ -2463,7 +2520,10 @@ impl Instruction {
                 ));
             }
             "popcnti" => {
-                let ops = self.x86_operands(&[OperandKind::Int, OperandKind::Int])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?,
+                ]);
                 asm.puts(&format!(
                     "popcnt{} {}",
                     Self::x86_suffix(OperandKind::Int),
@@ -2471,7 +2531,10 @@ impl Instruction {
                 ));
             }
             "popcntq" => {
-                let ops = self.x86_operands(&[OperandKind::Quad, OperandKind::Quad])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Quad)?,
+                    self.operands[0].x86_operand(OperandKind::Quad)?,
+                ]);
                 asm.puts(&format!(
                     "popcnt{} {}",
                     Self::x86_suffix(OperandKind::Quad),
@@ -2492,8 +2555,8 @@ impl Instruction {
             }
 
             "fii2d" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Int)?;
-                let op2 = self.operands[2].x86_operand(OperandKind::Double)?;
+                let op0 = self.operands[2].x86_operand(OperandKind::Int)?;
+                let op2 = self.operands[0].x86_operand(OperandKind::Double)?;
                 asm.puts(&format!("movd {}, {}", op0, op2));
 
                 let op1 = self.operands[1].x86_operand(OperandKind::Int)?;
@@ -2504,31 +2567,43 @@ impl Instruction {
             }
 
             "fd2ii" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Double)?;
+                let op0 = self.operands[2].x86_operand(OperandKind::Double)?;
                 let op1 = self.operands[1].x86_operand(OperandKind::Int)?;
                 asm.puts(&format!("movd {}, {}", op0, op1));
 
                 asm.puts(&format!("movsd {}, %xmm7", op0));
                 asm.puts("psrlq $32, %xmm7");
 
-                let op2 = self.operands[2].x86_operand(OperandKind::Int)?;
+                let op2 = self.operands[0].x86_operand(OperandKind::Int)?;
                 asm.puts(&format!("movd %xmm7, {}", op2));
             }
             "fq2d" => {
-                let ops = self.x86_operands(&[OperandKind::Quad, OperandKind::Double])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Quad)?,
+                    self.operands[0].x86_operand(OperandKind::Double)?,
+                ]);
                 asm.puts(&format!("movq {}", ops));
             }
             "fd2q" => {
-                let ops = self.x86_operands(&[OperandKind::Double, OperandKind::Quad])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Double)?,
+                    self.operands[0].x86_operand(OperandKind::Quad)?,
+                ]);
                 asm.puts(&format!("movq {}", ops));
             }
             "fi2f" => {
-                let ops = self.x86_operands(&[OperandKind::Int, OperandKind::Float])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Float)?,
+                ]);
                 asm.puts(&format!("movd {}", ops));
             }
 
             "ff2i" => {
-                let ops = self.x86_operands(&[OperandKind::Float, OperandKind::Int])?;
+                let ops = order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Float)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?,
+                ]);
                 asm.puts(&format!("movd {}", ops));
             }
             "bo" => {
@@ -2544,7 +2619,7 @@ impl Instruction {
                 asm.puts(&format!("jnz {}", self.operands[0].asm_label()?));
             }
             "leai" => {
-                Self::emit_x86_lea(asm, &self.operands[0], &self.operands[1], OperandKind::Int)?
+                Self::emit_x86_lea(asm, &self.operands[1], &self.operands[0], OperandKind::Int)?
             }
             "memfence" | "fence" => {
                 let sp = RegisterId::for_name_str("sp");
@@ -2555,32 +2630,32 @@ impl Instruction {
             }
 
             "absf" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Float)?;
-                let op1 = self.operands[1].x86_operand(OperandKind::Float)?;
+                let op0 = self.operands[1].x86_operand(OperandKind::Float)?;
+                let op1 = self.operands[0].x86_operand(OperandKind::Float)?;
                 let scratch = X86_SCRATCH_REGISTER.x86_operand(OperandKind::Int);
                 asm.puts(&format!("movl $0x80000000, {}", scratch));
                 asm.puts(&format!("movd {}, {}", scratch, op1));
                 asm.puts(&format!("andnps {}, {}", op0, op1));
             }
             "absd" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Double)?;
-                let op1 = self.operands[1].x86_operand(OperandKind::Double)?;
+                let op0 = self.operands[1].x86_operand(OperandKind::Double)?;
+                let op1 = self.operands[0].x86_operand(OperandKind::Double)?;
                 let scratch = X86_SCRATCH_REGISTER.x86_operand(OperandKind::Quad);
                 asm.puts(&format!("movq $0x8000000000000000, {}", scratch));
                 asm.puts(&format!("movd {}, {}", scratch, op1));
                 asm.puts(&format!("andnps {}, {}", op0, op1));
             }
             "negf" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Float)?;
-                let op1 = self.operands[1].x86_operand(OperandKind::Float)?;
+                let op0 = self.operands[1].x86_operand(OperandKind::Float)?;
+                let op1 = self.operands[0].x86_operand(OperandKind::Float)?;
                 let scratch = X86_SCRATCH_REGISTER.x86_operand(OperandKind::Int);
                 asm.puts(&format!("movl $0x80000000, {}", scratch));
                 asm.puts(&format!("movd {}, {}", scratch, op1));
                 asm.puts(&format!("xorps {}, {}", op0, op1));
             }
             "negd" => {
-                let op0 = self.operands[0].x86_operand(OperandKind::Double)?;
-                let op1 = self.operands[1].x86_operand(OperandKind::Double)?;
+                let op0 = self.operands[1].x86_operand(OperandKind::Double)?;
+                let op1 = self.operands[0].x86_operand(OperandKind::Double)?;
                 let scratch = RegisterId::for_name_str("X64_SCRATCH_REGISTER")
                     .x86_operand(OperandKind::Quad)?;
                 asm.puts(&format!("movq $0x8000000000000000, {}", scratch));
@@ -2589,82 +2664,118 @@ impl Instruction {
             }
             "atomicxchgaddb" => asm.puts(&format!(
                 "lock xaddb {}",
-                self.x86_operands(&[OperandKind::Byte, OperandKind::Byte])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Byte)?,
+                    self.operands[0].x86_operand(OperandKind::Byte)?,
+                ])
             )),
             "atomicxchgaddh" => asm.puts(&format!(
                 "lock xaddh {}",
-                self.x86_operands(&[OperandKind::Half, OperandKind::Half])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Half)?,
+                    self.operands[0].x86_operand(OperandKind::Half)?,
+                ])
             )),
             "atomicxchgaddi" => asm.puts(&format!(
                 "lock xaddl {}",
-                self.x86_operands(&[OperandKind::Int, OperandKind::Int])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?,
+                ])
             )),
             "atomicxchgaddq" => asm.puts(&format!(
                 "lock xaddq {}",
-                self.x86_operands(&[OperandKind::Quad, OperandKind::Quad])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Quad)?,
+                    self.operands[0].x86_operand(OperandKind::Quad)?,
+                ])
             )),
 
             "atomicxchgsubb" => {
                 asm.puts(&format!(
                     "negb {}",
-                    self.operands[0].x86_operand(OperandKind::Byte)?
+                    self.operands[1].x86_operand(OperandKind::Byte)?
                 ));
                 asm.puts(&format!(
                     "lock xaddb {}",
-                    self.x86_operands(&[OperandKind::Byte, OperandKind::Byte])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Byte)?,
+                        self.operands[0].x86_operand(OperandKind::Byte)?,
+                    ])
                 ))
             }
             "atomicxchgsubh" => {
                 asm.puts(&format!(
                     "negh {}",
-                    self.operands[0].x86_operand(OperandKind::Half)?
+                    self.operands[1].x86_operand(OperandKind::Half)?
                 ));
                 asm.puts(&format!(
                     "lock xaddh {}",
-                    self.x86_operands(&[OperandKind::Half, OperandKind::Half])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Half)?,
+                        self.operands[0].x86_operand(OperandKind::Half)?,
+                    ])
                 ))
             }
 
             "atomicxchgsubi" => {
                 asm.puts(&format!(
                     "negl {}",
-                    self.operands[0].x86_operand(OperandKind::Int)?
+                    self.operands[1].x86_operand(OperandKind::Int)?
                 ));
                 asm.puts(&format!(
                     "lock xaddl {}",
-                    self.x86_operands(&[OperandKind::Int, OperandKind::Int])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Int)?,
+                        self.operands[0].x86_operand(OperandKind::Int)?,
+                    ])
                 ))
             }
 
             "atomicxchgsubq" => {
                 asm.puts(&format!(
                     "negq {}",
-                    self.operands[0].x86_operand(OperandKind::Quad)?
+                    self.operands[1].x86_operand(OperandKind::Quad)?
                 ));
                 asm.puts(&format!(
                     "lock xaddq {}",
-                    self.x86_operands(&[OperandKind::Quad, OperandKind::Quad])?
+                    order_operands(&[
+                        self.operands[1].x86_operand(OperandKind::Quad)?,
+                        self.operands[0].x86_operand(OperandKind::Quad)?,
+                    ])
                 ))
             }
 
             "atomicxchgb" => asm.puts(&format!(
                 "xchgb {}",
-                self.x86_operands(&[OperandKind::Byte, OperandKind::Byte])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Byte)?,
+                    self.operands[0].x86_operand(OperandKind::Byte)?,
+                ])
             )),
 
             "atomicxchgh" => asm.puts(&format!(
                 "xchgh {}",
-                self.x86_operands(&[OperandKind::Half, OperandKind::Half])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Half)?,
+                    self.operands[0].x86_operand(OperandKind::Half)?,
+                ])
             )),
 
             "atomicxchgi" => asm.puts(&format!(
                 "xchgl {}",
-                self.x86_operands(&[OperandKind::Int, OperandKind::Int])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Int)?,
+                    self.operands[0].x86_operand(OperandKind::Int)?,
+                ])
             )),
 
             "atomicxchgq" => asm.puts(&format!(
                 "xchgq {}",
-                self.x86_operands(&[OperandKind::Quad, OperandKind::Quad])?
+                order_operands(&[
+                    self.operands[1].x86_operand(OperandKind::Quad)?,
+                    self.operands[0].x86_operand(OperandKind::Quad)?,
+                ])
             )),
 
             _ => self.lower_default(asm)?,

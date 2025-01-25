@@ -476,10 +476,8 @@ impl Node {
             Self::StructOffset(offset) => Self::StructOffset(offset.fresh_variables(mapping)),
             Self::AbsoluteAddress(addr) => Self::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(addr.base.fresh_variables(mapping)),
-                bracket_token: addr.bracket_token,
             }),
             Self::Address(addr) => Self::Address(Address {
-                bracket_token: addr.bracket_token,
                 base: Box::new(addr.base.fresh_variables(mapping)),
                 offset: Box::new(addr.offset.fresh_variables(mapping)),
             }),
@@ -487,9 +485,6 @@ impl Node {
                 base: Box::new(base_index.base.fresh_variables(mapping)),
                 index: Box::new(base_index.index.fresh_variables(mapping)),
                 offset: Box::new(base_index.offset.fresh_variables(mapping)),
-                bracket_token: base_index.bracket_token,
-                comma1: base_index.comma1,
-                comma2: base_index.comma2,
                 scale: Box::new(base_index.scale.fresh_variables(mapping)),
             }),
 
@@ -533,11 +528,9 @@ impl Node {
             Self::Variable(var) => var.substitute(mapping),
             Self::AbsoluteAddress(addr) => Self::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(addr.base.substitute(mapping)),
-                bracket_token: addr.bracket_token,
             }),
 
             Self::Address(addr) => Self::Address(Address {
-                bracket_token: addr.bracket_token,
                 base: Box::new(addr.base.substitute(mapping)),
                 offset: Box::new(addr.offset.substitute(mapping)),
             }),
@@ -545,9 +538,6 @@ impl Node {
                 base: Box::new(base_index.base.substitute(mapping)),
                 index: Box::new(base_index.index.substitute(mapping)),
                 offset: Box::new(base_index.offset.substitute(mapping)),
-                bracket_token: base_index.bracket_token,
-                comma1: base_index.comma1,
-                comma2: base_index.comma2,
                 scale: Box::new(base_index.scale.substitute(mapping)),
             }),
             Self::AndImmediate(and) => Self::AndImmediate(AndImmediate {
@@ -671,11 +661,9 @@ impl Node {
 
             Self::AbsoluteAddress(addr) => Self::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(addr.base.substitute_labels(mapping)),
-                bracket_token: addr.bracket_token,
             }),
 
             Self::Address(addr) => Self::Address(Address {
-                bracket_token: addr.bracket_token,
                 base: Box::new(addr.base.substitute_labels(mapping)),
                 offset: Box::new(addr.offset.substitute_labels(mapping)),
             }),
@@ -684,9 +672,6 @@ impl Node {
                 base: Box::new(base_index.base.substitute_labels(mapping)),
                 index: Box::new(base_index.index.substitute_labels(mapping)),
                 offset: Box::new(base_index.offset.substitute_labels(mapping)),
-                bracket_token: base_index.bracket_token,
-                comma1: base_index.comma1,
-                comma2: base_index.comma2,
                 scale: Box::new(base_index.scale.substitute_labels(mapping)),
             }),
 
@@ -760,7 +745,6 @@ impl Node {
         match self {
             Self::AbsoluteAddress(addr) => Self::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(addr.base.demacroify(macros, stack)),
-                bracket_token: addr.bracket_token,
             }),
 
             Self::AddImmediates(add) => Self::AddImmediates(AddImmediates {
@@ -770,7 +754,6 @@ impl Node {
             }),
 
             Self::Address(addr) => Self::Address(Address {
-                bracket_token: addr.bracket_token,
                 base: Box::new(addr.base.demacroify(macros, stack)),
                 offset: Box::new(addr.offset.demacroify(macros, stack)),
             }),
@@ -873,6 +856,136 @@ impl Node {
             }
 
             _ => self.clone(),
+        }
+    }
+
+    pub fn fold(&self) -> syn::Result<Node> {
+        match self {
+            Self::Seq(seq) => {
+                let mut new_list = Vec::new();
+                for item in seq.iter() {
+                    new_list.push(item.fold()?);
+                }
+                Ok(Self::Seq(new_list))
+            }
+
+            Self::NegImmediate(neg) => {
+                let value = neg.value.fold()?;
+                if let Node::Immediate(imm) = value {
+                    Ok(Self::Immediate(Immediate {
+                        value: imm.value.wrapping_neg(),
+                    }))
+                } else {
+                    Err(syn::Error::new(Span::call_site(), "invalid immediate value"))
+                }
+            }
+            Self::AddImmediates(add) => {
+                let left = add.left.fold()?;
+                let right = add.right.fold()?;
+                Ok(Self::AddImmediates(AddImmediates {
+                    left: Box::new(left),
+                    plus: add.plus,
+                    right: Box::new(right),
+                }))
+            }
+            Self::MulImmediates(mul) => {
+                let left = mul.left.fold()?;
+                let right = mul.right.fold()?;
+                Ok(Self::MulImmediates(MulImmediates {
+                    left: Box::new(left),
+                    times: mul.times,
+                    right: Box::new(right),
+                }))
+            }
+
+            Self::SubImmediates(sub) => {
+                let left = sub.left.fold()?;
+                let right = sub.right.fold()?;
+                Ok(Self::SubImmediates(SubImmediates {
+                    left: Box::new(left),
+                    minus: sub.minus,
+                    right: Box::new(right),
+                }))
+            }
+
+            Self::OrImmediate(or) => {
+                let left = or.left.fold()?;
+                let right = or.right.fold()?;
+                Ok(Self::OrImmediate(OrImmediate {
+                    left: Box::new(left),
+                    or: or.or,
+                    right: Box::new(right),
+                }))
+            }
+
+            Self::AndImmediate(and) => {
+                let left = and.left.fold()?;
+                let right = and.right.fold()?;
+                Ok(Self::AndImmediate(AndImmediate {
+                    left: Box::new(left),
+                    and: and.and,
+                    right: Box::new(right),
+                }))
+            }
+
+            Self::BitNotImmediate(bit_not) => {
+                let value = bit_not.value.fold()?;
+                Ok(Self::BitNotImmediate(BitNotImmediate {
+                    value: Box::new(value),
+                    bitnot: bit_not.bitnot,
+                }))
+            }
+
+            Self::Instruction(instr) => Ok(Self::Instruction(Instruction {
+                opcode: instr.opcode.clone(),
+                operands: {
+                    let mut punc = Punctuated::new();
+                    for op in instr.operands.iter() {
+                        punc.push(op.fold()?);
+                    }
+                    punc
+                },
+                documentation: instr.documentation.clone(),
+                span: instr.opcode.span(),
+            })),
+
+            Self::Address(addr) => {
+                let base = addr.base.fold()?;
+                let offset = addr.offset.fold()?;
+                Ok(Self::Address(Address {
+                    base: Box::new(base),
+                    offset: Box::new(offset),
+                }))
+            }
+
+            Self::BaseIndex(base_index) => {
+                let base = base_index.base.fold()?;
+                let index = base_index.index.fold()?;
+                let offset = base_index.offset.fold()?;
+                Ok(Self::BaseIndex(BaseIndex {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    offset: Box::new(offset),
+                    scale: Box::new(base_index.scale.fold()?),
+                }))
+            }
+
+            Self::AbsoluteAddress(addr) => {
+                let base = addr.base.fold()?;
+                Ok(Self::AbsoluteAddress(AbsoluteAddress {
+                    base: Box::new(base),
+                }))
+            }
+
+            Self::ConstDecl(decl) => Ok(Self::ConstDecl(ConstDecl {
+                variable: decl.variable.clone(),
+                eq: decl.eq,
+                expr: Box::new(decl.expr.fold()?),
+                span: decl.span,
+                documentation: decl.documentation.clone(),
+            })),
+
+            _ => Ok(self.clone()),
         }
     }
 }

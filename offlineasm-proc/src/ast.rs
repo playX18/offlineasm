@@ -275,7 +275,6 @@ impl VecRegisterId {
 #[derive(Clone)]
 pub struct Address {
     pub offset: Box<Node>,
-    pub bracket_token: syn::token::Bracket,
     pub base: Box<Node>,
 }
 
@@ -289,12 +288,9 @@ impl Display for Address {
 #[derive(Clone)]
 /// offset[base, index, scale]
 pub struct BaseIndex {
-    pub offset: Box<Node>,
-    pub bracket_token: syn::token::Bracket,
     pub base: Box<Node>,
-    pub comma1: Token![,],
+    pub offset: Box<Node>,
     pub index: Box<Node>,
-    pub comma2: Option<Token![,]>,
     pub scale: Box<Node>,
 }
 
@@ -312,7 +308,6 @@ impl Display for BaseIndex {
 #[derive(Clone)]
 /// [base]
 pub struct AbsoluteAddress {
-    pub bracket_token: syn::token::Bracket,
     pub base: Box<Node>,
 }
 
@@ -929,6 +924,7 @@ impl Display for Tmp {
 
 #[derive(Clone)]
 pub enum Node {
+    Nop,
     Tmp(Rc<Tmp>),
     Export(Export),
     IfThenElse(IfThenElse),
@@ -1025,6 +1021,7 @@ impl std::fmt::Display for Node {
             Self::SpecialRegister(x) => {
                 write!(f, "{}", x.x86_operand(crate::x86::OperandKind::Ptr))?
             }
+            Self::Nop => (),
             Self::Export(x) => write!(f, "{}", x)?,
             Self::IfThenElse(if_then_else) => {
                 write!(f, "if {} {{\n", if_then_else.predicate)?;

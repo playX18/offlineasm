@@ -256,7 +256,6 @@ impl Address {
         Node::Address(Address {
             base: Box::new(Node::Tmp(tmp.clone())),
             offset: Box::new(Node::Immediate(Immediate { value: 0 })),
-            bracket_token: self.bracket_token.clone(),
         })
     }
 }
@@ -284,9 +283,6 @@ impl BaseIndex {
                     index: self.index.clone(),
                     scale: self.scale.clone(),
                     offset: Box::new(Node::Immediate(Immediate { value: 0 })),
-                    comma1: self.comma1.clone(),
-                    comma2: self.comma2.clone(),
-                    bracket_token: self.bracket_token.clone(),
                 }),
                 Node::Tmp(tmp.clone()),
             ]),
@@ -295,7 +291,6 @@ impl BaseIndex {
         Node::Address(Address {
             base: Box::new(Node::Tmp(tmp.clone())),
             offset: self.offset.clone(),
-            bracket_token: self.bracket_token.clone(),
         })
         .risc_lower_malformed_addresses_recurse(list, node, filter)
     }
@@ -325,7 +320,6 @@ impl AbsoluteAddress {
         Node::Address(Address {
             base: Box::new(Node::Tmp(tmp.clone())),
             offset: Box::new(Node::Immediate(Immediate { value: 0 })),
-            bracket_token: self.bracket_token.clone(),
         })
         .risc_lower_malformed_addresses_recurse(list, node, filter)
     }
@@ -344,7 +338,6 @@ impl BaseIndex {
         Node::Address(Address {
             base: Box::new(Node::Tmp(tmp.clone())),
             offset: Box::new(Node::Immediate(Immediate { value: 0 })),
-            bracket_token: self.bracket_token.clone(),
         })
     }
 }
@@ -570,7 +563,6 @@ impl Node {
                         .risc_lower_malformed_immediates(list, valid_immediates),
                 ),
                 offset: address.offset.clone(),
-                bracket_token: address.bracket_token.clone(),
             }),
             Node::BaseIndex(base_index) => Node::BaseIndex(BaseIndex {
                 base: Box::new(
@@ -581,9 +573,6 @@ impl Node {
                 index: base_index.index.clone(),
                 scale: base_index.scale.clone(),
                 offset: base_index.offset.clone(),
-                comma1: base_index.comma1.clone(),
-                comma2: base_index.comma2.clone(),
-                bracket_token: base_index.bracket_token.clone(),
             }),
 
             _ => self.clone(),

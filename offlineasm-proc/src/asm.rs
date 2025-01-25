@@ -222,6 +222,7 @@ impl LabelReference {
 impl Node {
     pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
         match self {
+            Self::Nop => Ok(()),
             Self::Instruction(x) => x.lower(asm),
             Self::Label(x) => x.lower(asm),
             Self::LocalLabel(x) => x.lower(asm),
@@ -302,23 +303,17 @@ impl Node {
             Self::Address(addr) => Self::Address(Address {
                 base: Box::new(addr.base.resolve_constants(asm)),
                 offset: Box::new(addr.offset.resolve_constants(asm)),
-                bracket_token: addr.bracket_token,
             }),
 
             Self::BaseIndex(x) => Self::BaseIndex(BaseIndex {
                 base: Box::new(x.base.resolve_constants(asm)),
                 index: Box::new(x.index.resolve_constants(asm)),
                 scale: Box::new(x.scale.resolve_constants(asm)),
-                bracket_token: x.bracket_token,
-                comma1: x.comma1,
-                comma2: x.comma2,
                 offset: Box::new(x.offset.resolve_constants(asm)),
             }),
 
             Self::AbsoluteAddress(x) => Self::AbsoluteAddress(AbsoluteAddress {
                 base: Box::new(x.base.resolve_constants(asm)),
-
-                bracket_token: x.bracket_token,
             }),
 
             Self::Label(x) => {
