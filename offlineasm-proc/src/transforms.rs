@@ -35,7 +35,11 @@ impl Into<bool> for Node {
 impl Node {
     pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> Node {
         match self {
-            Node::Setting(x) => settings.get(&x).copied().unwrap().into(),
+            Node::Setting(x) => {
+                let res = settings.get(&x).copied().unwrap().into();
+                println!("resolve {}->{}", x, res);
+                res
+            }
             Node::True => true.into(),
             Node::False => false.into(),
             Node::And(lhs, rhs) => {
@@ -876,7 +880,10 @@ impl Node {
                         value: imm.value.wrapping_neg(),
                     }))
                 } else {
-                    Err(syn::Error::new(Span::call_site(), "invalid immediate value"))
+                    Err(syn::Error::new(
+                        Span::call_site(),
+                        "invalid immediate value",
+                    ))
                 }
             }
             Self::AddImmediates(add) => {
@@ -986,6 +993,25 @@ impl Node {
             })),
 
             _ => Ok(self.clone()),
+        }
+    }
+
+    pub fn directives(&self) -> (Node, Vec<Ident>) {
+        match self {
+            Self::Seq(seq) => {
+                let mut directives = Vec::new();
+                let mut new_list = Vec::new();
+                for item in seq.iter() {
+                    if let Node::Directive(directive) = item {
+                        directives.push(directive.clone());
+                    } else {
+                        new_list.push(item.clone());
+                    }
+                }
+                (Node::Seq(new_list), directives)
+            }
+
+            _ => unreachable!(),
         }
     }
 }

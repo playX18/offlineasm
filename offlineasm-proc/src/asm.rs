@@ -99,7 +99,10 @@ impl Assembler {
 
         let mut sym_out = TokenStream::new();
         for (i, sym) in self.symbols.iter().enumerate() {
-            let name = Ident::new(&format!("{}", &sym.name().to_string()[..]), Span::call_site());
+            let name = Ident::new(
+                &format!("{}", &sym.name().to_string()[..]),
+                Span::call_site(),
+            );
             let sym_id = Ident::new(&format!("_sym_{}", i), Span::call_site());
             sym_out.extend(quote::quote! {
                 #sym_id = sym #name,
@@ -122,10 +125,11 @@ impl Assembler {
             #[doc(hidden)]
             pub mod _docs {
                 #![allow(non_upper_case_globals)]
-                #doc 
+                #doc
             }
         });
         output.extend(self.rust_out);
+
         output
     }
 
@@ -245,7 +249,7 @@ impl Node {
                     #[allow(non_upper_case_globals)]
                     #abi {
                         #[link_name=#link_name]
-                        #item   
+                        #item
                     }
                 });
                 Ok(())
@@ -297,7 +301,13 @@ impl Node {
                 span: instr.opcode.span(),
                 documentation: instr.documentation.clone(),
             }),
-            Self::Const(x) => asm.add_constant(x.expr.clone()),
+            Self::Const(x) => {
+                if crate::is_rloop() {
+                    self.clone()
+                } else {
+                    asm.add_constant(x.expr.clone())
+                }
+            }
             Self::Seq(seq) => Self::Seq(seq.iter().map(|x| x.resolve_constants(asm)).collect()),
             Self::AsmOperand(x) => Self::AsmOperand(*x),
             Self::Address(addr) => Self::Address(Address {
@@ -329,9 +339,7 @@ impl Node {
                     _ => (),
                 }
                 self.clone()
-            }  
-
-           
+            }
 
             _ => self.clone(),
         }

@@ -19,10 +19,73 @@
 // r11 =>                  (scratch)
 
 use proc_macro2::Span;
-use std::sync::LazyLock;
+use std::cell::LazyCell;
+use std::{collections::HashMap, sync::LazyLock};
 use syn::Ident;
 
 use crate::{asm::Assembler, ast::*, id, instructions::is_power_of_two, is_windows, punc_from_vec};
+
+thread_local! {
+    static X86_CALLCONV_MAPPING: LazyCell<HashMap<Ident, &'static str>> = LazyCell::new(|| {
+        if is_windows() {
+            // Windows ABI
+            let mapping: [(&[&str], &str); 15] = [
+               (&["t0", "r0", "ws0"], "eax"),
+               (&["t6", "a0", "wa0"], "ecx"),
+               (&["t1", "a1", "wa1"], "edx"),
+               (&["t2", "a2", "wa2"], "r8"),
+               (&["t3", "a3", "wa3"], "r9"),
+               (&["t4"], "r10"),
+               (&["csr0"], "edi"),
+               (&["csr1"], "esi"),
+               (&["csr2"], "ebx"),
+               (&["csr3"], "r12"),
+               (&["csr4"], "r13"),
+               (&["csr5"], "r14"),
+               (&["csr6"], "r15"),
+               (&["cfr"], "ebp"),
+               (&["sp"], "esp"),
+            ];
+
+            let mut result = HashMap::new();
+            for (names, reg) in mapping {
+                for name in names {
+                    result.insert(id(name), reg);
+                }
+            }
+            result
+        } else {
+            // SystemV ABI
+            let mapping: [(&[&str], &str); 15] = [
+                (&["t0", "r0", "ws0"], "eax"),
+                (&["t6", "a0", "wa0"], "edi"),
+                (&["t1", "a1", "wa1"], "esi"),
+                (&["t2", "r1", "a2", "wa2"], "edx"),
+                (&["t3", "a3", "wa3"], "ecx"),
+                (&["t4", "a4", "wa4"], "r8"),
+                (&["t5", "ws1"], "r10"),
+                (&["t7", "a5", "wa5"], "r9"),
+                (&["csr0"], "ebx"),
+                (&["csr1"], "r12"),
+                (&["csr2"], "r13"),
+                (&["csr3"], "r14"),
+                (&["csr4"], "r15"),
+                (&["cfr"], "ebp"),
+                (&["sp"], "esp"),
+            ];
+
+            let mut result = HashMap::new();
+
+            for (names, reg) in mapping {
+                for name in names {
+                    result.insert(id(name), reg);
+                }
+            }
+
+            result
+        }
+    });
+}
 
 fn register(name: impl ToString) -> String {
     let name = name.to_string();
@@ -54,7 +117,7 @@ fn constant0b(c: impl ToString) -> String {
 }
 #[derive(Clone)]
 pub struct SpecialRegister {
-    name: Ident,
+    pub name: Ident,
 }
 
 unsafe impl Sync for SpecialRegister {}
@@ -114,7 +177,6 @@ pub fn x86_gpr_name(name: &str, kind: OperandKind) -> syn::Result<String> {
             OperandKind::Int => return Ok(register(&format!("{}d", name))),
             OperandKind::Ptr | OperandKind::Quad => return Ok(register(name)),
             _ => {
-                
                 return Err(syn::Error::new(
                     proc_macro2::Span::call_site(),
                     format!("invalid operand kind for GPR: {:?}", kind),
@@ -152,7 +214,7 @@ impl RegisterId {
     }
 
     pub fn x86_gpr(&self) -> syn::Result<String> {
-        let name = self.name.to_string();
+        /*let name = self.name.to_string();
         match name.as_str() {
             "t0" | "r0" | "ws0" => Ok("eax".to_string()),
             "t6" | "a0" | "wa0" => Ok("edi".to_string()),
@@ -176,8 +238,15 @@ impl RegisterId {
             _ => Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 format!("cannot use register {} on X86", self.name),
+            )),*/
+
+        X86_CALLCONV_MAPPING.with(|map| match map.get(&self.name) {
+            Some(reg) => Ok(reg.to_string()),
+            None => Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("cannot use register {} on x86_64", self.name),
             )),
-        }
+        })
     }
 
     pub fn x86_operand(&self, kind: OperandKind) -> syn::Result<String> {
@@ -1616,7 +1685,6 @@ impl Instruction {
 
     pub fn lower_x86(&self, asm: &mut Assembler) -> syn::Result<()> {
         let opcode = self.opcode.to_string();
-        println!("lower x86 {}", opcode);
         match opcode.as_str() {
             "mov" => self.handle_move(asm)?,
             "addi" => self.handle_x86_add(asm, OperandKind::Int)?,
@@ -1701,7 +1769,7 @@ impl Instruction {
             "storei" => {
                 let op = order_operands(&[
                     self.operands[1].x86_operand(OperandKind::Int)?,
-                    self.operands[0].x86_operand(OperandKind::Int)?
+                    self.operands[0].x86_operand(OperandKind::Int)?,
                 ]);
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Int), op));
             }
@@ -1716,7 +1784,7 @@ impl Instruction {
             "storep" => {
                 let op = order_operands(&[
                     self.operands[1].x86_operand(OperandKind::Ptr)?,
-                    self.operands[0].x86_operand(OperandKind::Ptr)?
+                    self.operands[0].x86_operand(OperandKind::Ptr)?,
                 ]);
                 asm.puts(&format!("mov{} {}", Self::x86_suffix(OperandKind::Ptr), op));
             }
@@ -1732,7 +1800,7 @@ impl Instruction {
             "storeq" => {
                 let op = order_operands(&[
                     self.operands[1].x86_operand(OperandKind::Quad)?,
-                    self.operands[0].x86_operand(OperandKind::Quad)?
+                    self.operands[0].x86_operand(OperandKind::Quad)?,
                 ]);
                 asm.puts(&format!(
                     "mov{} {}",
@@ -2830,7 +2898,7 @@ impl Node {
     pub fn x86_call_operand(&self, kind: OperandKind) -> syn::Result<String> {
         match self {
             Self::Label(x) => Ok(format!("{}", x.name())),
-            Self::LabelReference(x) => Ok(format!("{}", x.label.name())),
+            Self::LabelReference(x) => Ok(x.asm_label()),
             Self::LocalLabel(x) => Ok(format!("{}", x.name)),
             Self::LocalLabelReference(x) => Ok(format!("{}", x.label.name)),
             Self::RegisterId(x) => Ok(x.x86_operand(kind)?),
@@ -2895,7 +2963,10 @@ impl Node {
             Self::OrImmediate(x) => Ok(x.left.immediate_value()? | x.right.immediate_value()?),
             Self::XorImmediate(x) => Ok(x.left.immediate_value()? ^ x.right.immediate_value()?),
             Self::BitNotImmediate(x) => Ok(!x.value.immediate_value()?),
-            _ => Err(syn::Error::new(Span::call_site(), "invalid operand")),
+            _ => Err(syn::Error::new(
+                Span::call_site(),
+                &format!("invalid operand {}", self),
+            )),
         }
     }
 
@@ -2904,7 +2975,7 @@ impl Node {
             Self::Address(x) => x.x86_address_operand(kind),
             Self::AbsoluteAddress(x) => x.x86_address_operand(kind),
             Self::BaseIndex(x) => x.x86_address_operand(kind),
-            _ => Err(syn::Error::new(Span::call_site(), "invalid operand")),
+            _ => Err(syn::Error::new(Span::call_site(), "invalid operand AAA")),
         }
     }
 }

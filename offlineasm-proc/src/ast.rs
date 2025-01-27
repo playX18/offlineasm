@@ -15,6 +15,8 @@ use syn::Abi;
 use syn::ForeignItemFn;
 use syn::{Ident, LitStr, Path, Token};
 
+use crate::riscv64::RISCV64MemoryOrdering;
+use crate::riscv64::RISCV64RoundingMode;
 use crate::x86::SpecialRegister;
 
 /// StructOffset is a struct that represents the offset of a field in a struct.
@@ -63,6 +65,12 @@ impl Display for SizeOf {
 #[derive(Clone)]
 pub struct Immediate {
     pub value: isize,
+}
+
+impl Immediate {
+    pub fn new(value: isize) -> Node {
+        Node::Immediate(Immediate { value })
+    }
 }
 
 impl Display for Immediate {
@@ -324,6 +332,17 @@ pub struct Instruction {
     pub documentation: Option<Vec<String>>,
     pub opcode: Ident,
     pub operands: Punctuated<Node, Token![,]>,
+}
+
+impl Default for Instruction {
+    fn default() -> Self {
+        Self {
+            span: Span::call_site(),
+            documentation: None,
+            opcode: Ident::new("nop", Span::call_site()),
+            operands: Punctuated::new(),
+        }
+    }
 }
 
 impl Display for Instruction {
@@ -924,6 +943,9 @@ impl Display for Tmp {
 
 #[derive(Clone)]
 pub enum Node {
+    Directive(Ident),
+    RV64MemoryOrdering(RISCV64MemoryOrdering),
+    RV64RoundingMode(RISCV64RoundingMode),
     Nop,
     Tmp(Rc<Tmp>),
     Export(Export),
@@ -968,6 +990,147 @@ pub enum Node {
 }
 
 impl Node {
+    pub fn as_address(&self) -> Option<&Address> {
+        match self {
+            Node::Address(address) => Some(address),
+            _ => None,
+        }
+    }
+
+    pub fn as_label(&self) -> Option<&Label> {
+        match self {
+            Node::Label(label) => Some(label),
+            _ => None,
+        }
+    }
+
+    pub fn as_local_label(&self) -> Option<&Arc<LocalLabel>> {
+        match self {
+            Node::LocalLabel(label) => Some(label),
+            _ => None,
+        }
+    }
+
+    pub fn as_register(&self) -> Option<&RegisterId> {
+        match self {
+            Node::RegisterId(register) => Some(register),
+            _ => None,
+        }
+    }
+
+    pub fn as_fp_register(&self) -> Option<&FPRegisterId> {
+        match self {
+            Node::FPRegisterId(register) => Some(register),
+            _ => None,
+        }
+    }
+
+    pub fn as_vec_register(&self) -> Option<&VecRegisterId> {
+        match self {
+            Node::VecRegisterId(register) => Some(register),
+            _ => None,
+        }
+    }
+
+    pub fn as_immediate(&self) -> Option<&Immediate> {
+        match self {
+            Node::Immediate(immediate) => Some(immediate),
+            _ => None,
+        }
+    }
+
+    pub fn as_label_reference(&self) -> Option<&LabelReference> {
+        match self {
+            Node::LabelReference(label_reference) => Some(label_reference),
+            _ => None,
+        }
+    }
+
+    pub fn as_local_label_reference(&self) -> Option<&LocalLabelReference> {
+        match self {
+            Node::LocalLabelReference(local_label_reference) => Some(local_label_reference),
+            _ => None,
+        }
+    }
+
+    pub fn as_tmp(&self) -> Option<&Rc<Tmp>> {
+        match self {
+            Node::Tmp(tmp) => Some(tmp),
+            _ => None,
+        }
+    }
+
+    pub fn as_export(&self) -> Option<&Export> {
+        match self {
+            Node::Export(export) => Some(export),
+            _ => None,
+        }
+    }
+
+    pub fn as_instruction(&self) -> Option<&Instruction> {
+        match self {
+            Node::Instruction(instruction) => Some(instruction),
+            _ => None,
+        }
+    }
+
+    pub fn as_const(&self) -> Option<&Const> {
+        match self {
+            Node::Const(constant) => Some(constant),
+            _ => None,
+        }
+    }
+
+    pub fn as_variable(&self) -> Option<&Variable> {
+        match self {
+            Node::Variable(variable) => Some(variable),
+            _ => None,
+        }
+    }
+
+    pub fn as_setting(&self) -> Option<&Ident> {
+        match self {
+            Node::Setting(setting) => Some(setting),
+            _ => None,
+        }
+    }
+
+    pub fn as_seq(&self) -> Option<&Vec<Node>> {
+        match self {
+            Node::Seq(seq) => Some(seq),
+            _ => None,
+        }
+    }
+
+    pub fn as_true(&self) -> Option<&bool> {
+        match self {
+            Node::True => Some(&true),
+            Node::False => Some(&false),
+            _ => None,
+        }
+    }
+
+    pub fn as_false(&self) -> Option<&bool> {
+        match self {
+            Node::False => Some(&false),
+            _ => None,
+        }
+    }
+
+    pub fn as_base_index(&self) -> Option<&BaseIndex> {
+        match self {
+            Node::BaseIndex(base_index) => Some(base_index),
+            _ => None,
+        }
+    }
+
+    pub fn as_absolute_address(&self) -> Option<&AbsoluteAddress> {
+        match self {
+            Node::AbsoluteAddress(absolute_address) => Some(absolute_address),
+            _ => None,
+        }
+    }
+
     pub fn children(&self) -> Vec<Node> {
         match self {
             Node::Seq(seq) => seq.iter().cloned().collect(),
@@ -1016,11 +1179,12 @@ impl Node {
 impl std::fmt::Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RV64MemoryOrdering(x) => write!(f, "{}", x.riscv64_memory_ordering())?,
+            Self::RV64RoundingMode(x) => write!(f, "{}", x.riscv64_rounding_mode())?,
             Self::Tmp(tmp) => write!(f, "{}", tmp)?,
             Self::AsmOperand(x) => write!(f, "{{_{}}}", x)?,
-            Self::SpecialRegister(x) => {
-                write!(f, "{}", x.x86_operand(crate::x86::OperandKind::Ptr))?
-            }
+            Self::SpecialRegister(x) => write!(f, "{}", x.name)?,
+            Self::Directive(x) => write!(f, ".{}", x)?,
             Self::Nop => (),
             Self::Export(x) => write!(f, "{}", x)?,
             Self::IfThenElse(if_then_else) => {
@@ -1099,3 +1263,17 @@ impl PartialEq for Node {
 }
 
 impl Eq for Node {}
+
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Copy, Debug)]
+pub enum OperandType {
+    RegisterId,
+    FPRegisterId,
+    VecRegisterId,
+    Immediate,
+    LabelReference,
+    LocalLabelReference,
+    Address,
+    BaseIndex,
+    AbsoluteAddress,
+    Tmp,
+}

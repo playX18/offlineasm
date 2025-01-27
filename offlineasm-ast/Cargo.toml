@@ -1,0 +1,15 @@
+[package]
+name = "offlineasm-ast"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lazy-regex = "3.4.1"
+paste = { version = "1.0.15", default-features = false }
+proc-macro2 = { version = "1.0.93", default-features = false }
+regex = "1.11.1"
+syn = { version = "2.0.96", features = ["full"] }
+
+
+[features]
+proc-macro = ["proc-macro2/proc-macro"]

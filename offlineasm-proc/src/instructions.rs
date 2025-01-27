@@ -1,8 +1,14 @@
 use std::{collections::HashSet, sync::LazyLock};
 
-use offlineasm_def::for_each_instruction;
+use offlineasm_ast::for_each_instruction;
+use proc_macro2::Span;
 use syn::parse::ParseStream;
-/* 
+
+use crate::{
+    ast::{Instruction, Node},
+    id, punc_from_vec,
+};
+/*
 #[rustfmt::skip]
 static MACRO_INSTRUCTIONS: &[&str] = &[
 
@@ -373,7 +379,7 @@ pub static ARM_INSTRUCTIONS: &[&str] = &[
      "storecondi",
      "storecond2i",
      "writefence",
-];  
+];
 
 pub static ARM64_INSTRUCTIONS: &[&str] = &[
     "bfiq", // Bit field insert <source reg> <last bit written> <width immediate> <dest reg>
@@ -481,13 +487,12 @@ pub static INSTRUCTIONS: LazyLock<Vec<&str>> = LazyLock::new(|| {
     instructions
 });
 
-pub static INSTRUCTION_SET: LazyLock<HashSet<&str>> = LazyLock::new(|| {
-    INSTRUCTIONS.iter().copied().collect()
-});
+pub static INSTRUCTION_SET: LazyLock<HashSet<&str>> =
+    LazyLock::new(|| INSTRUCTIONS.iter().copied().collect());
 
 pub fn is_branch(instruction: &str) -> bool {
     instruction.starts_with("b")
-}   
+}
 
 pub fn has_fall_through(instruction: &str) -> bool {
     instruction != "jmp" && instruction != "ret"
@@ -514,7 +519,6 @@ syn::custom_keyword!(beaeqwqe);
 
 for_each_instruction!(def_keywords);
 
-
 pub fn peek_instruction(input: &ParseStream) -> bool {
     let mut result = false;
     macro_rules! peek_keyword {
@@ -526,8 +530,19 @@ pub fn peek_instruction(input: &ParseStream) -> bool {
             )*
         };
     }
-    
+    if input.peek(syn::Token![move]) {
+        return result;
+    }
     for_each_instruction!(peek_keyword);
 
     result
+}
+
+pub fn mov(dst: Node, src: Node) -> Node {
+    Node::Instruction(Instruction {
+        opcode: id("mov"),
+        operands: punc_from_vec(vec![dst, src]),
+        span: Span::call_site(),
+        documentation: None,
+    })
 }

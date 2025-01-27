@@ -70,9 +70,10 @@ pub fn is_label(input: &ParseStream) -> bool {
 pub fn is_not_operand(input: &ParseStream) -> bool {
     input.peek(syn::Token![;])
         || input.peek(syn::Token![#])
+        || input.peek(syn::Token![move])
         || peek_instruction(input)
         || input.peek(syn::Token![->])
-        || input.peek(syn::Token![const])
+        || (input.peek(syn::Token![const]) && !input.peek2(syn::token::Brace))
         || input.peek(syn::Token![if])
         || input.peek(syn::Token![macro])
         || input.peek(kw::export)
@@ -106,7 +107,12 @@ impl<'a> AsmParser<'a> {
             }
 
             //let _ = input.parse::<syn::Trken![;]>()?;
-            if input.peek(syn::Token![const]) {
+            if input.peek(syn::Token![.]) {
+                let _ = input.parse::<syn::Token![.]>()?;
+                let directive = input.parse::<syn::Ident>()?;
+                list.push(Node::Directive(directive));
+                continue;
+            } else if input.peek(syn::Token![const]) {
                 let _ = input.parse::<syn::Token![const]>()?;
                 if input.peek(syn::Ident) {
                     let variable = input.parse::<syn::Ident>()?;
@@ -406,7 +412,9 @@ impl<'a> AsmParser<'a> {
     }
 
     pub fn parse_const_expr(&mut self, input: &mut ParseStream) -> syn::Result<Node> {
-        let expr = input.parse::<syn::Expr>()?;
+        let content;
+        let _ = syn::braced!(content in input);
+        let expr = content.parse::<syn::Expr>()?;
         Ok(Node::Const(Const { expr }))
     }
 
@@ -569,7 +577,9 @@ impl<'a> AsmParser<'a> {
             }));
         } else if input.peek(syn::Token![const]) {
             let _ = input.parse::<syn::Token![const]>()?;
-            let expr = input.parse::<syn::Expr>()?;
+            let content;
+            let _ = syn::braced!(content in input);
+            let expr = content.parse::<syn::Expr>()?;
             return Ok(Node::Const(Const { expr }));
         } else if input.peek(syn::Token![=>]) {
             let _ = input.parse::<syn::Token![=>]>()?;

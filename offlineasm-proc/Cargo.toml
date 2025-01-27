@@ -10,6 +10,6 @@ quote = "1.0.38"
 regex = "1.11.1"
 syn = { version = "2.0.96", features = ["full"] }
 lazy-regex = "3.4.0"
-offlineasm-def = { path = "../offlineasm-def" }
+offlineasm-ast = { path = "../offlineasm-ast" }
 [lib]
 proc-macro = true 

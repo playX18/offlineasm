@@ -1,5 +1,5 @@
 use proc_macro2::Span;
-use syn::{punctuated::Punctuated, Token};
+use syn::punctuated::Punctuated;
 
 use crate::ast::*;
 
@@ -82,11 +82,11 @@ impl Node {
 }
 
 pub fn assign_registers_to_temporaries(
-    seq: &Punctuated<Node, Token![,]>,
+    seq: &Vec<Node>,
     kind: TmpKind,
     registers: &Vec<Node>,
-) -> syn::Result<Punctuated<Node, Token![,]>> {
-    let mut new_list = Punctuated::new();
+) -> syn::Result<Vec<Node>> {
+    let mut new_list = Vec::new();
 
     for (i, node) in seq.iter().enumerate() {
         node.mention(i);
@@ -96,15 +96,14 @@ pub fn assign_registers_to_temporaries(
 
     for (i, node) in seq.iter().enumerate() {
         let mut tmp_list = node.filter(|x| matches!(x, Node::Tmp(_)));
+
         tmp_list.dedup_by(|a, b| match (a, b) {
             (Node::Tmp(a), Node::Tmp(b)) => a.id == b.id,
             _ => false,
         });
 
         for tmp in tmp_list.iter() {
-            let Node::Tmp(tmp) = tmp else {
-                unreachable!()
-            };
+            let Node::Tmp(tmp) = tmp else { unreachable!() };
 
             if tmp.kind == kind && tmp.first_mention.get() == i {
                 if free_registers.is_empty() {
@@ -118,11 +117,11 @@ pub fn assign_registers_to_temporaries(
                 }
 
                 let register = free_registers.pop().unwrap();
+
                 tmp.register.borrow_mut().replace(register);
             }
-
             if tmp.kind == kind && tmp.last_mention.get() == i {
-                if let Some(reg) = tmp.register.borrow_mut().take() {
+                if let Some(reg) = tmp.register.borrow_mut().as_ref().map(|x| x.clone()) {
                     free_registers.push(reg);
                 }
             }
