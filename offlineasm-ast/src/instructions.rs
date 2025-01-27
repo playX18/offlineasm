@@ -2496,8 +2496,8 @@ macro_rules! define_instructions {
                             self.span
                         }
 
-                        pub fn map<F>(&self, _f: F) -> Self
-                        where F: Fn(Operand) -> Operand {
+                        pub fn map<F>(&self, mut _f: F) -> Self
+                        where F: FnMut(Operand) -> Operand {
                             Self {
                                 span: self.span.clone(),
                                 $(
@@ -2509,8 +2509,8 @@ macro_rules! define_instructions {
                     }
 
                     impl<F> MapOperands<F> for [<$ins:camel>]
-                    where F: Fn(Operand) -> Operand {
-                        fn map_operands(&self, _f: F) -> Self {
+                    where F: FnMut(Operand) -> Operand {
+                        fn map_operands(&self, mut _f: F) -> Self {
                             Self {
                                 span: self.span.clone(),
                                 $(
@@ -2522,8 +2522,8 @@ macro_rules! define_instructions {
                     }
 
                     impl<F, E> TryMapOperands<F, E> for [<$ins:camel>]
-                    where F: Fn(Operand) -> Result<Operand, E> {
-                        fn try_map_operands(&self, _f: F) -> Result<Self, E> {
+                    where F: FnMut(Operand) -> Result<Operand, E> {
+                        fn try_map_operands(&self, mut _f: F) -> Result<Self, E> {
                             Ok(Self {
                                 span: self.span.clone(),
                                 $(
@@ -2534,8 +2534,8 @@ macro_rules! define_instructions {
                     }
 
                     impl<F> ForEachOperand<F> for [<$ins:camel>]
-                    where F: Fn(&Operand) {
-                        fn for_each_operand(&self, _f: F) {
+                    where F: FnMut(&Operand) {
+                        fn for_each_operand(&self, mut _f: F) {
                             $(
                                 _f(&self.$name);
                             )*
@@ -2592,8 +2592,8 @@ macro_rules! define_instructions {
                 })*
 
                 impl<F> MapOperands<F> for [<$group:camel>]
-                where F: Fn(Operand) -> Operand {
-                    fn map_operands(&self, _f: F) -> Self {
+                where F: FnMut(Operand) -> Operand {
+                    fn map_operands(&self, mut _f: F) -> Self {
                         match self {
                             $(
                                 Self::[<$ins:camel>](ins) => Self::[<$ins:camel>](ins.map_operands(_f)),
@@ -2603,8 +2603,8 @@ macro_rules! define_instructions {
                 }
 
                 impl<F, E> TryMapOperands<F, E> for [<$group:camel>]
-                where F: Fn(Operand) -> Result<Operand, E> {
-                    fn try_map_operands(&self, _f: F) -> Result<Self, E> {
+                where F: FnMut(Operand) -> Result<Operand, E> {
+                    fn try_map_operands(&self, mut _f: F) -> Result<Self, E> {
                         match self {
                             $(
                                 Self::[<$ins:camel>](ins) => Ok(Self::[<$ins:camel>](ins.try_map_operands(_f)?)),
@@ -2614,8 +2614,8 @@ macro_rules! define_instructions {
                 }
 
                 impl<F> ForEachOperand<F> for [<$group:camel>]
-                where F: Fn(&Operand) {
-                    fn for_each_operand(&self, _f: F) {
+                where F: FnMut(&Operand) {
+                    fn for_each_operand(&self, mut _f: F) {
                         match self {
                             $(
                                 Self::[<$ins:camel>](ins) => ins.for_each_operand(_f),
@@ -2699,21 +2699,21 @@ instructions!(define_instructions);
 
 pub trait MapOperands<F>: Sized
 where
-    F: Fn(Operand) -> Operand,
+    F: FnMut(Operand) -> Operand,
 {
     fn map_operands(&self, f: F) -> Self;
 }
 
 pub trait TryMapOperands<F, E>: Sized
 where
-    F: Fn(Operand) -> Result<Operand, E>,
+    F: FnMut(Operand) -> Result<Operand, E>,
 {
     fn try_map_operands(&self, f: F) -> Result<Self, E>;
 }
 
 pub trait ForEachOperand<F>
 where
-    F: Fn(&Operand),
+    F: FnMut(&Operand),
 {
     fn for_each_operand(&self, f: F);
 }

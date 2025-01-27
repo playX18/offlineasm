@@ -1,7 +1,6 @@
 [workspace]
 members = [
-    "offlineasm", "offlineasm-ast", "offlineasm-meta",
-    "offlineasm-proc",
+    "offlineasm", "offlineasm-ast"
 ]
 
 default-members = ["offlineasm"]

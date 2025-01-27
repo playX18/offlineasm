@@ -197,6 +197,121 @@ impl Operand {
             _ => self.clone(),
         })
     }
+
+    pub fn try_immediate(&self) -> Option<u64> {
+        match self {
+            Self::Constant(c) => match c.value {
+                ConstantValue::Immediate(i) => Some(i),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn fold(&self, constants: &HashMap<Ident, Operand>) -> syn::Result<Self> {
+        match self {
+            Self::Constant(c) => Ok(Self::Constant(c.clone())),
+            Self::BinaryExpression(expr) => {
+                let left = expr.lhs.fold(constants)?;
+                let right = expr.rhs.fold(constants)?;
+
+                let left = left.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Left operand is not an immediate"))?;
+                let right = right.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Right operand is not an immediate"))?;
+
+                match expr.op {
+                    BinaryOperator::Add => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left.wrapping_add(right)),
+                        span: expr.span.clone(),
+                    })),
+                    BinaryOperator::Sub => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left.wrapping_sub(right)),
+                        span: expr.span.clone(),
+                    })),
+                    BinaryOperator::Mul => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left.wrapping_mul(right)),
+                        span: expr.span.clone(),
+                    })),
+                    BinaryOperator::And => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left & right),
+                        span: expr.span.clone(),
+                    })),
+
+                    BinaryOperator::Or => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left | right),
+                        span: expr.span.clone(),
+                    })),
+
+                    BinaryOperator::Xor => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(left ^ right),
+                        span: expr.span.clone(),
+                    })),
+
+                    _ => Err(syn::Error::new(expr.span, "Unsupported binary operator")),
+                }
+            }
+
+            Operand::UnaryExpression(expr) => {
+                let operand = expr.operand.fold(constants)?;
+                let operand = operand.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Operand is not an immediate"))? as i64;
+
+                match expr.op {
+                    UnaryOperator::Neg => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(operand.wrapping_neg() as u64),
+                        span: expr.span.clone(),
+                    })),
+                    UnaryOperator::Not => Ok(Self::Constant(Constant {
+                        value: ConstantValue::Immediate(!(operand as u64)),
+                        span: expr.span.clone(),
+                    })),
+                }
+            }
+
+            Operand::Address(addr) => {
+                match &addr.kind {
+                    AddressKind::Absolute { value } => {
+                        let value = value.fold(constants)?;
+                        Ok(Self::Address(Rc::new(Address {
+                            kind: AddressKind::Absolute { value },
+                            span: addr.span.clone(),
+                        })))
+                    }
+
+                    AddressKind::Base { base, offset } => {
+                        let base = base.fold(constants)?;
+                        let offset = offset.fold(constants)?;
+                        Ok(Self::Address(Rc::new(Address {
+                            kind: AddressKind::Base { base, offset },
+                            span: addr.span.clone(),
+                        })))
+                    }
+
+                    AddressKind::BaseIndex { base, index, scale, offset } => {
+                        let base = base.fold(constants)?;
+                        let index = index.fold(constants)?;
+                        let scale = scale.fold(constants)?;
+                        let offset = offset.fold(constants)?;
+                        Ok(Self::Address(Rc::new(Address {
+                            kind: AddressKind::BaseIndex { base, index, scale, offset },
+                            span: addr.span.clone(),
+                        })))
+                    }
+                }
+            }
+
+            Operand::Name(name) => match name {
+                Name::Variable(var) => {
+                    if let Some(op) = constants.get(&var.name) {
+                        Ok(op.clone())
+                    } else {
+                        Ok(self.clone())
+                    }
+                }
+                _ => Ok(self.clone()),  
+            }
+
+            _ => Ok(self.clone()),
+        }
+    }
 }
 
 impl Stmt {
@@ -283,6 +398,40 @@ impl Stmt {
             }
             Self::Instruction(instr) => {
                 Ok(Self::Instruction(Rc::new(instr.rename_labels(mapping)?)))
+            }
+            _ => Ok(self.clone()),
+        }
+    }
+
+    pub fn fold(&self, constants: &HashMap<Ident, Operand>) -> syn::Result<Self> {
+        match self {
+            Self::Sequence(seq) => {
+                let mut new_list = Vec::new();
+                let mut my_constants = constants.clone();
+                for item in seq.stmts.iter() {
+                    if let Stmt::ConstDecl(decl) = item {
+                        my_constants.insert(decl.name.clone(), decl.value.clone());
+                    } else {
+                        new_list.push(item.fold(&my_constants)?);
+                    }
+                }
+                Ok(Self::Sequence(Rc::new(Sequence {
+                    span: seq.span.clone(),
+                    stmts: new_list,
+                })))
+            }
+
+            Self::ConstDecl(decl) => {
+                let value = decl.value.fold(constants)?;
+                Ok(Self::ConstDecl(Rc::new(ConstDecl {
+                    name: decl.name.clone(),
+                    value,
+                    span: decl.span.clone(),
+                })))
+            }
+
+            Self::Instruction(instr) => {
+                Ok(Self::Instruction(Rc::new(instr.try_map_operands(|op| op.fold(constants))?)))
             }
             _ => Ok(self.clone()),
         }

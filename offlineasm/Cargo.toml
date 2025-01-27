@@ -5,4 +5,3 @@ edition = "2021"
 
 [dependencies]
 lazy-regex = "3.4.0"
-offlineasm-proc = { path = "../offlineasm-proc" }

@@ -67,6 +67,15 @@ pub enum LabelMapping {
     Local(Rc<LocalLabel>),
 }
 
+impl LabelMapping {
+    pub fn name(&self) -> &Ident {
+        match self {
+            Self::Global(x) => &x.name,
+            Self::Local(x) => &x.name,
+        }
+    }
+}
+
 impl Display for LabelMapping {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -361,6 +370,7 @@ impl Display for PredicateExpr {
 
 pub struct Toplevel {
     pub stmts: Vec<Stmt>,
+    pub settings: HashMap<Ident, bool>,
 }
 
 impl Display for Toplevel {

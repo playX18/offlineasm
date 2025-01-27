@@ -465,11 +465,23 @@ impl Display for Name {
 }
 
 #[derive(Clone)]
+pub struct SpecialRegister {
+    pub name: Ident,
+}
+
+impl Display for SpecialRegister {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+#[derive(Clone)]
 pub enum Operand {
     Name(Name),
     GPRegister(GPRegister),
     FPRegister(FPRegister),
     VecRegister(VecRegister),
+    SpecialRegister(SpecialRegister),
 
     Constant(Constant),
     Address(Rc<Address>),
@@ -486,6 +498,7 @@ impl Display for Operand {
             Operand::GPRegister(reg) => write!(f, "{}", reg),
             Operand::FPRegister(reg) => write!(f, "{}", reg),
             Operand::VecRegister(reg) => write!(f, "{}", reg),
+            Operand::SpecialRegister(reg) => write!(f, "{}", reg),
             Operand::Address(addr) => write!(f, "{}", addr),
             Operand::Constant(c) => write!(f, "{}", c),
             Operand::BinaryExpression(e) => write!(f, "{}", e),

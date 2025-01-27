@@ -1,5 +1,6 @@
 use crate::instructions;
 use crate::registers;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::instructions::*;
@@ -268,6 +269,7 @@ impl Parse for PredicateExpr {
 
 mod kw {
     syn::custom_keyword!(abs);
+    syn::custom_keyword!(setting);
 }
 
 impl Parse for Address {
@@ -435,6 +437,7 @@ impl Parse for ConstDecl {
         let name = input.parse::<syn::Ident>()?;
         let _ = input.parse::<syn::Token![=]>()?;
         let value = Operand::parse(input)?;
+        let _ = input.parse::<syn::Token![;]>()?;
         Ok(Self { span, name, value })
     }
 }
@@ -538,6 +541,16 @@ impl Parse for Stmt {
             return ConstDecl::parse(input).map(Rc::new).map(Stmt::ConstDecl);
         } else if input.peek(syn::Token![if]) {
             return Predicate::parse(input).map(Rc::new).map(Stmt::Predicate);
+        } else if input.peek(syn::Token![move]) {
+            let _ = input.parse::<syn::Token![move]>()?;
+            let dst = input.parse::<Operand>()?;
+            let _ = input.parse::<syn::Token![,]>()?;
+            let src = input.parse::<Operand>()?;
+            return Ok(Stmt::Instruction(Rc::new(Instruction::Mv(Mv {
+                span: input.span(),
+                dst,
+                src,
+            }))));
         } else if instructions::Instruction::peek(input) {
             return Instruction::parse(input)
                 .map(Rc::new)
@@ -577,9 +590,18 @@ impl Parse for Stmt {
 impl Parse for Toplevel {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut stmts = Vec::new();
+        let mut settings = HashMap::new();  
         while !input.is_empty() {
-            stmts.push(Stmt::parse(input)?);
+            if input.peek(kw::setting) {
+                let _ = input.parse::<kw::setting>()?;
+                let name = input.parse::<syn::Ident>()?;
+                let _ = input.parse::<syn::Token![=]>()?;
+                let value = input.parse::<syn::LitBool>()?;
+                settings.insert(name, value.value());
+            } else {
+                stmts.push(Stmt::parse(input)?);
+            }
         }
-        Ok(Self { stmts })
+        Ok(Self { stmts, settings })
     }
 }
