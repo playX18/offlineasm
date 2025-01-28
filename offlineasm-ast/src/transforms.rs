@@ -198,7 +198,7 @@ impl Operand {
         })
     }
 
-    pub fn try_immediate(&self) -> Option<u64> {
+    pub fn try_immediate(&self) -> Option<i64> {
         match self {
             Self::Constant(c) => match c.value {
                 ConstantValue::Immediate(i) => Some(i),
@@ -256,11 +256,11 @@ impl Operand {
 
                 match expr.op {
                     UnaryOperator::Neg => Ok(Self::Constant(Constant {
-                        value: ConstantValue::Immediate(operand.wrapping_neg() as u64),
+                        value: ConstantValue::Immediate(operand.wrapping_neg() as i64),
                         span: expr.span.clone(),
                     })),
                     UnaryOperator::Not => Ok(Self::Constant(Constant {
-                        value: ConstantValue::Immediate(!(operand as u64)),
+                        value: ConstantValue::Immediate(!(operand as i64)),
                         span: expr.span.clone(),
                     })),
                 }

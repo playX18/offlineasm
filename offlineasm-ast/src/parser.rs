@@ -363,7 +363,7 @@ impl Parse for Constant {
             let val = lit.base10_parse::<i64>()?;
             return Ok(Constant {
                 span: input.span(),
-                value: ConstantValue::Immediate(val as u64),
+                value: ConstantValue::Immediate(val as i64),
             });
         } else if input.peek(syn::LitStr) {
             let lit = input.parse::<syn::LitStr>()?;

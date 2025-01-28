@@ -1,7 +1,7 @@
 use crate::{
     instructions::{Instruction, MapOperands},
     operands::*,
-    stmt::{LabelMapping, Sequence, Stmt},
+    stmt::{Label, LabelMapping, LocalLabel, Sequence, Stmt},
 };
 use proc_macro2::Span;
 use std::{
@@ -53,7 +53,50 @@ impl Assembler {
     pub fn format(&mut self, arguments: std::fmt::Arguments<'_>) {
         use std::fmt::Write;
         self.assembler_output.write_fmt(arguments).unwrap();
-        self.assembler_output.push('\n');
+    }
+
+    pub fn local_label(&mut self, label: &LocalLabel) {
+        self.format(format_args!(
+            "{label}:\n",
+            label = local_label_string(&label.name.to_string())
+        ));
+    }
+
+    fn global_label_impl(
+        &mut self,
+        label: &Label,
+        alt_entry: impl Fn(&Label) -> String,
+        alignment: &str,
+        visibility: impl Fn(&Label) -> String,
+    ) {
+        if is_darwin() {
+            self.puts(".section __TEXT");
+        } else {
+            self.puts(".text");
+        }
+        self.puts(alignment);
+        self.puts(&alt_entry(label));
+        self.format(format_args!(
+            ".globl {label}\n",
+            label = global_reference(&label.name.to_string())
+        ));
+        self.puts(&visibility(label));
+        self.format(format_args!(
+            "{label}:\n",
+            label = global_reference(&label.name.to_string())
+        ));
+    }
+
+    pub fn global_label(&mut self, label: &Label) {
+        self.global_label_impl(label, |_| "".to_string(), "", |_| "".to_string());
+    }
+
+    pub fn local_label_reference(label: &LocalLabel) -> String {
+        local_label_string(&label.name.to_string())
+    }
+
+    pub fn global_label_reference(label: &Label) -> String {
+        global_reference(&label.name.to_string())
     }
 }
 
@@ -146,4 +189,111 @@ pub fn is_setting_set(name: &str) -> bool {
 
 pub fn set_setting(name: &str, value: bool) {
     SETTINGS.with(|settings| settings.borrow_mut().insert(name.to_string(), value));
+}
+
+pub fn is_darwin() -> bool {
+    is_setting_set("macos")
+        || is_setting_set("ios")
+        || is_setting_set("watchos")
+        || is_setting_set("tvos")
+}
+
+pub fn is_linux() -> bool {
+    is_setting_set("linux")
+}
+
+pub fn is_unix() -> bool {
+    is_setting_set("unix")
+}
+
+pub fn is_x64() -> bool {
+    is_setting_set("x86_64")
+}
+
+pub fn is_arm64() -> bool {
+    is_setting_set("arm64")
+}
+
+pub fn is_riscv64() -> bool {
+    is_setting_set("riscv64")
+}
+
+pub fn is_windows() -> bool {
+    is_setting_set("windows")
+}
+
+pub fn is_freebsd() -> bool {
+    is_setting_set("freebsd")
+}
+
+pub fn is_haiku() -> bool {
+    is_setting_set("haiku")
+}
+
+pub fn is_qnx() -> bool {
+    is_setting_set("qnx")
+}
+
+pub fn symbol_string(symbol: &str) -> String {
+    if is_darwin() {
+        format!("_{}", symbol)
+    } else {
+        symbol.to_string()
+    }
+}
+
+pub fn global_reference(symbol: &str) -> String {
+    if (is_linux() || is_freebsd() || is_haiku() || is_qnx()) && is_x64() {
+        format!("{symbol}@plt")
+    } else {
+        symbol_string(symbol)
+    }
+}
+
+pub fn is_aix() -> bool {
+    is_setting_set("aix")
+}
+
+pub fn local_reference(symbol: &str) -> String {
+    global_reference(symbol)
+}
+
+pub fn hide_symbol(symbol: &str) -> String {
+    if is_darwin() {
+        return format!(".private_extern _{symbol}");
+    } else if is_aix() {
+        return format!(".lglobl {symbol}");
+    } else if is_unix() {
+        return format!(".hidden {symbol}");
+    } else {
+        symbol.to_string()
+    }
+}
+
+pub fn local_label_string(name: &str) -> String {
+    if is_darwin() {
+        format!("L{name}")
+    } else {
+        format!(".L{name}")
+    }
+}
+
+impl LocalLabel {
+    pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
+        asm.local_label(&self);
+        Ok(())
+    }
+}
+
+impl Label {
+    pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
+        asm.global_label(&self);
+        Ok(())
+    }
+}
+
+impl Stmt {
+    pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
+        todo!()
+    }
 }

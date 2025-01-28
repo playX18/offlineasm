@@ -196,11 +196,38 @@ pub struct Constant {
     pub value: ConstantValue,
 }
 
+impl From<i32> for Constant {
+    fn from(value: i32) -> Self {
+        Self {
+            span: Span::call_site(),
+            value: ConstantValue::Immediate(value as i64),
+        }
+    }
+}
+
+impl From<i64> for Constant {
+    fn from(value: i64) -> Self {
+        Self {
+            span: Span::call_site(),
+            value: ConstantValue::Immediate(value),
+        }
+    }
+}
+
+impl From<u64> for Constant {
+    fn from(value: u64) -> Self {
+        Self {
+            span: Span::call_site(),
+            value: ConstantValue::Immediate(value as i64),
+        }
+    }
+}
+
 impl From<isize> for Constant {
     fn from(value: isize) -> Self {
         Self {
             span: Span::call_site(),
-            value: ConstantValue::Immediate(value as u64),
+            value: ConstantValue::Immediate(value as i64),
         }
     }
 }
@@ -209,10 +236,11 @@ impl From<usize> for Constant {
     fn from(value: usize) -> Self {
         Self {
             span: Span::call_site(),
-            value: ConstantValue::Immediate(value as u64),
+            value: ConstantValue::Immediate(value as i64),
         }
     }
 }
+
 
 impl Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -222,7 +250,7 @@ impl Display for Constant {
 
 #[derive(Clone)]
 pub enum ConstantValue {
-    Immediate(u64),
+    Immediate(i64),
     Bytes(Cow<'static, [u8]>),
     String(Cow<'static, str>),
     Boolean(bool),
@@ -236,6 +264,20 @@ pub enum ConstantValue {
     /// This is produced by the transformation passes of offlineasm, users can't create it.
     Reference(usize),
 }
+
+impl PartialEq for ConstantValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ConstantValue::Immediate(i1), ConstantValue::Immediate(i2)) => i1 == i2,
+            (ConstantValue::Bytes(b1), ConstantValue::Bytes(b2)) => b1 == b2,
+            (ConstantValue::String(s1), ConstantValue::String(s2)) => s1 == s2,
+            (ConstantValue::Boolean(b1), ConstantValue::Boolean(b2)) => b1 == b2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ConstantValue {}
 
 impl Display for ConstantValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -354,6 +396,39 @@ pub enum AddressKind {
         /// Must be resolved to immediate constant.
         offset: Operand,
     },
+}
+
+impl PartialEq for AddressKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (AddressKind::Absolute { value: v1 }, AddressKind::Absolute { value: v2 }) => v1 == v2,
+            (
+                AddressKind::Base {
+                    base: b1,
+                    offset: o1,
+                },
+                AddressKind::Base {
+                    base: b2,
+                    offset: o2,
+                },
+            ) => b1 == b2 && o1 == o2,
+            (
+                AddressKind::BaseIndex {
+                    base: b1,
+                    index: i1,
+                    scale: s1,
+                    offset: o1,
+                },
+                AddressKind::BaseIndex {
+                    base: b2,
+                    index: i2,
+                    scale: s2,
+                    offset: o2,
+                },
+            ) => b1 == b2 && i1 == i2 && s1 == s2 && o1 == o2,
+            _ => false,
+        }
+    }
 }
 
 impl Display for AddressKind {
@@ -491,6 +566,21 @@ pub enum Operand {
     LocalLabelReference(Rc<LocalLabelReference>),
 }
 
+impl PartialEq for Operand {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Operand::Name(n1), Operand::Name(n2)) => n1 == n2,
+            (Operand::GPRegister(r1), Operand::GPRegister(r2)) => r1.0 == r2.0,
+            (Operand::FPRegister(r1), Operand::FPRegister(r2)) => r1.0 == r2.0,
+            (Operand::VecRegister(r1), Operand::VecRegister(r2)) => r1.0 == r2.0,
+            (Operand::SpecialRegister(r1), Operand::SpecialRegister(r2)) => r1.name == r2.name,
+            (Operand::Constant(c1), Operand::Constant(c2)) => c1.value == c2.value,
+            (Operand::Address(a1), Operand::Address(a2)) => a1.kind == a2.kind,
+            _ => false,
+        }
+    }
+}
+
 impl Display for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -515,14 +605,6 @@ impl From<isize> for Operand {
     }
 }
 
-impl From<i64> for Constant {
-    fn from(value: i64) -> Self {
-        Constant {
-            span: Span::call_site(),
-            value: ConstantValue::Immediate(value as u64),
-        }
-    }
-}
 
 impl From<i64> for Operand {
     fn from(value: i64) -> Self {
@@ -605,5 +687,32 @@ impl From<Name> for Operand {
 impl From<Address> for Operand {
     fn from(value: Address) -> Self {
         Operand::Address(Rc::new(value))
+    }
+}
+
+impl Name {
+    pub fn span(&self) -> Span {
+        match self {
+            Name::Variable(v) => v.span(),
+            Name::Concatenation(c) => c.span,
+        }
+    }
+}
+
+impl Operand {
+    pub fn span(&self) -> Span {
+        match self {
+            Operand::Name(name) => name.span(),
+            Operand::GPRegister(reg) => reg.span(),
+            Operand::FPRegister(reg) => reg.span(),
+            Operand::VecRegister(reg) => reg.span(),
+            Operand::SpecialRegister(reg) => reg.name.span(),
+            Operand::Address(addr) => addr.span,
+            Operand::Constant(c) => c.span,
+            Operand::BinaryExpression(e) => e.span,
+            Operand::UnaryExpression(e) => e.span,
+            Operand::LabelReference(l) => l.span,
+            Operand::LocalLabelReference(l) => l.span,
+        }
     }
 }

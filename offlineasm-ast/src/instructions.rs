@@ -18,6 +18,7 @@ macro_rules! for_each_instruction {
                 negp
                 negq
                 noti
+                notq
                 ori
                 orf
                 ord
@@ -493,6 +494,9 @@ macro_rules! instructions {
                 noti {
                     pub src_dst: Operand
                 },
+                notq {
+                    pub src_dst: Operand
+                },
                 ori {
                     pub dst: Operand,
                     pub lhs: Operand,
@@ -867,6 +871,16 @@ macro_rules! instructions {
                     pub target: Operand
                 },
                 bflt {
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                    pub target: Operand
+                },
+                bfgteq {
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                    pub target: Operand
+                },
+                bflteq {
                     pub lhs: Operand,
                     pub rhs: Operand,
                     pub target: Operand
@@ -2506,6 +2520,14 @@ macro_rules! define_instructions {
 
                             }
                         }
+                        #[allow(unused_mut, unused_assignments)]
+                        pub fn operands(&self) -> SmallVec<[&Operand; 4]> {
+                            let mut operands = SmallVec::new();
+                            $(
+                                operands.push(&self.$name);
+                            )*
+                            operands
+                        }
                     }
 
                     impl<F> MapOperands<F> for [<$ins:camel>]
@@ -2539,6 +2561,18 @@ macro_rules! define_instructions {
                             $(
                                 _f(&self.$name);
                             )*
+                        }
+                    }
+
+                    impl TryForEachOperand for [<$ins:camel>] {
+                        fn try_for_each_operand<F, E>(&self, mut _f: F) -> Result<(), E>
+                        where
+                            F: FnMut(&Operand) -> Result<(), E>,
+                        {
+                            $(
+                                _f(&self.$name)?;
+                            )*
+                            Ok(())
                         }
                     }
 
@@ -2591,6 +2625,12 @@ macro_rules! define_instructions {
                     }
                 })*
 
+                $(impl From<[<$ins:camel>]> for $crate::stmt::Stmt {
+                    fn from(ins: [<$ins:camel>]) -> Self {
+                        Self::Instruction(std::rc::Rc::new(ins.into()))
+                    }
+                })*
+
                 impl<F> MapOperands<F> for [<$group:camel>]
                 where F: FnMut(Operand) -> Operand {
                     fn map_operands(&self, mut _f: F) -> Self {
@@ -2624,6 +2664,19 @@ macro_rules! define_instructions {
                     }
                 }
 
+                impl TryForEachOperand for [<$group:camel>] {
+                    fn try_for_each_operand<F, E>(&self, mut _f: F) -> Result<(), E>
+                    where
+                        F: FnMut(&Operand) -> Result<(), E>,
+                    {
+                        match self {
+                            $(
+                                Self::[<$ins:camel>](ins) => ins.try_for_each_operand(_f),
+                            )*
+                        }
+                    }
+                }
+
                 impl [<$group:camel>] {
                     pub fn span(&self) -> Span {
                         match self {
@@ -2648,6 +2701,14 @@ macro_rules! define_instructions {
                             }
                         }
                     )*
+
+                    pub fn operands(&self) -> SmallVec<[&Operand; 4]> {
+                        match self {
+                            $(
+                                Self::[<$ins:camel>](ins) => ins.operands(),
+                            )*
+                        }
+                    }
                 }
 
                 pub mod [<$group:snake _kw>] {
@@ -2695,6 +2756,8 @@ macro_rules! define_instructions {
 
 use super::operands::*;
 use std::fmt::Display;
+
+use smallvec::SmallVec;
 instructions!(define_instructions);
 
 pub trait MapOperands<F>: Sized
@@ -2716,4 +2779,11 @@ where
     F: FnMut(&Operand),
 {
     fn for_each_operand(&self, f: F);
+}
+
+pub trait TryForEachOperand
+{
+    fn try_for_each_operand<F, E>(&self, f: F) -> Result<(), E>
+    where
+        F: FnMut(&Operand) -> Result<(), E>;
 }

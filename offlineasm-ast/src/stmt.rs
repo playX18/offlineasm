@@ -332,6 +332,24 @@ pub enum Stmt {
     Predicate(Rc<Predicate>),
 }
 
+impl From<Rc<LocalLabel>> for Stmt {
+    fn from(l: Rc<LocalLabel>) -> Self {
+        Self::LocalLabel(l)
+    }
+}
+
+impl From<Rc<Label>> for Stmt {
+    fn from(l: Rc<Label>) -> Self {
+        Self::Label(l)
+    }
+}
+
+impl From<Rc<Instruction>> for Stmt {
+    fn from(i: Rc<Instruction>) -> Self {
+        Self::Instruction(i)
+    }
+}
+
 impl Display for Stmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
