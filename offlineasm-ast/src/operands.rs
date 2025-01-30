@@ -508,6 +508,15 @@ pub struct LocalLabelReference {
     pub name: Rc<LocalLabel>,
 }
 
+impl LocalLabelReference {
+    pub fn new(name: Rc<LocalLabel>) -> Self {
+        Self {
+            span: Span::call_site(),
+            name,
+        }
+    }
+}
+
 impl Display for LocalLabelReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "=>{}", self.name.name)

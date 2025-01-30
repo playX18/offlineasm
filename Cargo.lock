@@ -35,6 +35,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "macro_extra"
+version = "0.1.0"
+dependencies = [
+ "lazy-regex",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -53,6 +63,7 @@ name = "offlineasm-ast"
 version = "0.1.0"
 dependencies = [
  "lazy-regex",
+ "macro_extra",
  "paste",
  "proc-macro2",
  "regex",

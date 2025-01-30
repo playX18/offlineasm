@@ -605,3 +605,13 @@ impl Parse for Toplevel {
         Ok(Self { stmts, settings })
     }
 }
+
+pub fn peek_not_operand(input: ParseStream) -> bool {
+    Instruction::peek(input)
+        || input.peek(syn::Token![->])
+        || (input.peek(syn::Ident) && input.peek2(syn::Token![:]))
+        || input.peek(syn::Token![macro])       
+        || input.peek(syn::Token![if])
+        || (input.peek(syn::Token![const]) && input.peek2(syn::Ident) && input.peek3(syn::Token![=]))
+        || input.peek(syn::token::Brace)
+}

@@ -1,441 +1,5 @@
 //! OfflineASM instruction definitions.
 
-#[macro_export]
-macro_rules! for_each_instruction {
-    ($m: ident) => {
-        $m! {
-            (MACRO_INSTRUCTIONS =>
-                emit
-                addi
-                andi
-                andf
-                andd
-                lshifti
-                lshiftp
-                lshiftq
-                muli
-                negi
-                negp
-                negq
-                noti
-                notq
-                ori
-                orf
-                ord
-                orh
-                rshifti
-                urshifti
-                rshiftp
-                urshiftp
-                rshiftq
-                urshiftq
-                lrotatei
-                lrotateq
-                rrotatei
-                rrotateq
-                subi
-                xori
-                load2ia
-                loadi
-                loadis
-                loadb
-                loadbsi
-                loadbsq
-                loadh
-                loadhsi
-                loadhsq
-                store2ia
-                storei
-                storeh
-                storeb
-                loadf
-                loadd
-                loadv
-                moved
-                storef
-                stored
-                storev
-                addf
-                addd
-                divf
-                divd
-                subf
-                subd
-                mulf
-                muld
-                sqrtf
-                sqrtd
-                floorf
-                floord
-                roundf
-                roundd
-                truncatef
-                truncated
-                truncatef2i
-                truncatef2q
-                truncated2q
-                truncated2i
-                truncatef2is
-                truncated2is
-                truncatef2qs
-                truncated2qs
-                ci2d
-                ci2ds
-                ci2f
-                ci2fs
-                cq2f
-                cq2fs
-                cq2d
-                cq2ds
-                cd2f
-                cf2d
-                fii2d
-                fd2ii
-                fq2d
-                fd2q
-                bdeq
-                bdneq
-                bdgt
-                bdgteq
-                bdlt
-                bdlteq
-                bdequn
-                bdnequn
-                bdgtun
-                bdgtequn
-                bdltun
-                bdltequn
-                bfeq
-                bfgt
-                bflt
-                bfgtun
-                bfgtequn
-                bfltun
-                bfltequn
-                btd2i
-                td2i
-                bcd2i
-                movdz
-                pop
-                popv
-                push
-                pushv
-                mov
-                sxi2q
-                zxi2q
-                sxb2i
-                sxh2i
-                sxb2q
-                sxh2q
-                nop
-                bieq
-                bineq
-                bia
-                biaeq
-                bib
-                bibeq
-                bigt
-                bigteq
-                bilt
-                bilteq
-                bbeq
-                bbneq
-                bba
-                bbaeq
-                bbb
-                bbbeq
-                bbgt
-                bbgteq
-                bblt
-                bblteq
-                btis
-                btiz
-                btinz
-                btbs
-                btbz
-                btbnz
-                jmp
-                baddio
-                baddis
-                baddiz
-                baddinz
-                bsubio
-                bsubis
-                bsubiz
-                bsubinz
-                bmulio
-                bmulis
-                bmuliz
-                bmulinz
-                borio
-                boris
-                boriz
-                borinz
-                breakpoint
-                call
-                ret
-                cbeq
-                cbneq
-                cba
-                cbaeq
-                cbb
-                cbbeq
-                cbgt
-                cbgteq
-                cblt
-                cblteq
-                cieq
-                cineq
-                cia
-                ciaeq
-                cib
-                cibeq
-                cigt
-                cigteq
-                cilt
-                cilteq
-                tis
-                tiz
-                tinz
-                tbs
-                tbz
-                tbnz
-                tps
-                tpz
-                tpnz
-                peek
-                poke
-                bpeq
-                bpneq
-                bpa
-                bpaeq
-                bpb
-                bpbeq
-                bpgt
-                bpgteq
-                bplt
-                bplteq
-                addp
-                mulp
-                andp
-                orp
-                subp
-                xorp
-                loadp
-                cpeq
-                cpneq
-                cpa
-                cpaeq
-                cpb
-                cpbeq
-                cpgt
-                cpgteq
-                cplt
-                cplteq
-                storep
-                btps
-                btpz
-                btpnz
-                baddpo
-                baddps
-                baddpz
-                baddpnz
-                tqs
-                tqz
-                tqnz
-                bqeq
-                bqneq
-                bqa
-                bqaeq
-                bqb
-                bqbeq
-                bqgt
-                bqgteq
-                bqlt
-                bqlteq
-                addq
-                mulq
-                andq
-                orq
-                subq
-                xorq
-                loadq
-                cqeq
-                cqneq
-                cqa
-                cqaeq
-                cqb
-                cqbeq
-                cqgt
-                cqgteq
-                cqlt
-                cqlteq
-                storeq
-                btqs
-                btqz
-                btqnz
-                baddqo
-                baddqs
-                baddqz
-                baddqnz
-                bo
-                bs
-                bz
-                bnz
-                leai
-                leap
-                memfence
-                tagCodePtr
-                tagReturnAddress
-                untagReturnAddress
-                removeCodePtrTag
-                untagArrayPtr
-                removeArrayPtrTag
-                tzcnti
-                tzcntq
-                lzcnti
-                lzcntq
-                absf
-                absd
-                negf
-                negd
-                ceilf
-                ceild
-                cfeq
-                cdeq
-                cfneq
-                cfnequn
-                cdneq
-                cdnequn
-                cflt
-                cdlt
-                cflteq
-                cdlteq
-                cfgt
-                cdgt
-                cfgteq
-                cdgteq
-                fi2f
-                ff2i
-                tls_loadp
-                tls_storep
-            )
-            (X86_INSTRUCTIONS =>
-                cdqi
-                idivi
-                udivi
-                cqoq
-                idivq
-                udivq
-                notq
-                atomicxchgaddb
-                atomicxchgaddh
-                atomicxchgaddi
-                atomicxchgaddq
-                atomicxchgsubb
-                atomicxchgsubh
-                atomicxchgsubi
-                atomicxchgsubq
-                atomicxchgb
-                atomicxchgh
-                atomicxchgi
-                atomicxchgq
-                batomicweakcasb
-                batomicweakcash
-                batomicweakcasi
-                batomicweakcasq
-                atomicweakcasb
-                atomicweakcash
-                atomicweakcasi
-                atomicweakcasq
-                atomicloadb
-                atomicloadh
-                atomicloadi
-                atomicloadq
-                fence
-            )
-            (ARM_INSTRUCTIONS =>
-                adci
-                bcs
-                clrbp
-                mvlbl
-                globaladdr
-                sbci
-                moveii
-                loadlinkb
-                loadlinkh
-                loadlinki
-                loadlink2i
-                storecondb
-                storecondh
-                storecondi
-                storecond2i
-                writefence
-            )
-            (ARM64_INSTRUCTIONS =>
-                bfiq
-                pcrtoaddr
-                loadqinc
-                loadlinkacqb
-                loadlinkacqh
-                loadlinkacqi
-                loadlinkacqq
-                storecondrelb
-                storecondrelh
-                storecondreli
-                storecondrelq
-                atomicxchgclearb
-                atomicxchgclearh
-                atomicxchgcleari
-                atomicxchgclearq
-                atomicxchgorb
-                atomicxchgorh
-                atomicxchgori
-                atomicxchgorq
-                atomicxchgxorb
-                atomicxchgxorh
-                atomicxchgxori
-                atomicxchgxorq
-                loadpairq
-                loadpairi
-                storepairq
-                storepairi
-                loadpaird
-                storepaird
-            )
-            (RISC_INSTRUCTIONS =>
-                smulli
-                umulli
-                addis
-                subis
-                oris
-                addps
-                divi
-                divis
-                divq
-                divqs
-                remi
-                remis
-                remq
-                remqs
-            )
-            (MIPS_INSTRUCTIONS =>
-                la
-                movz
-                movn
-                setcallreg
-                slt
-                sltu
-                pichdr
-            )
-            (RUST_INSTRUCTIONS =>
-                callNative
-                rloopCrash
-                rloopDo
-            )
-        }
-    };
-}
 // ($group: ident => $($instruction: ident { $($field: ident: $typ: ty),* })*)
 #[macro_export]
 macro_rules! instructions {
@@ -591,6 +155,21 @@ macro_rules! instructions {
                     pub dst: Operand,
                     pub addr: Operand,
                 },
+
+                loadh {
+                    pub dst: Operand,
+                    pub addr: Operand
+                },
+                loadhsi {
+                    pub dst: Operand,
+                    pub addr: Operand
+                },
+
+                loadhsq {
+                    pub dst: Operand,
+                    pub addr: Operand
+                },
+
                 store2ia {
                     pub addr: Operand,
                     pub src: Operand,
@@ -802,7 +381,7 @@ macro_rules! instructions {
                 },
                 bdeq {
                     pub lhs: Operand,
-                    pub dst: Operand,
+                    pub rhs: Operand,
                     pub target: Operand
                 },
                 bdneq {
@@ -1321,7 +900,7 @@ macro_rules! instructions {
                 /// Branch if i32 or is non-zero.
                 ///
                 /// Usage: `borinz <dst>, <lhs>, <rhs>, <target>`
-                boriinz {
+                borinz {
                     pub dst: Operand,
                     pub lhs: Operand,
                     pub rhs: Operand,
@@ -2467,21 +2046,50 @@ macro_rules! define_instructions {
                                 let _ = stringify!($name);
                                 count += 1;
                             )*
+                            macro_extra::match_ident! {
+                                match ($($name),*) {
+                                    (dst, lhs, rhs) => {
+                                        let dst = input.parse::<Operand>()?;
+                                        let _ = input.parse::<syn::Token![,]>()?;
+                                        let lhs = input.parse::<Operand>()?;
 
-                            let mut didread = 0;
-                            $(
-                                let $name = input.parse::<$t>()?;
-                                didread += 1;
-                                if didread < count {
-                                    let _ = input.parse::<syn::Token![,]>()?;
+                                        if $crate::parser::peek_not_operand(input) {
+                                            return Ok(Self {
+                                                span,
+                                                dst: dst.clone(),
+                                                lhs: dst,
+                                                rhs: lhs
+                                            })
+                                        } else {
+                                            let rhs = input.parse::<Operand>()?;
+                                            Ok(Self {
+                                                span,
+                                                dst,
+                                                lhs,
+                                                rhs
+                                            })
+                                        }
+                                    },
+
+                                    _ => {
+                                        let mut didread = 0;
+                                        $(
+                                            let $name = input.parse::<$t>()?;
+                                            didread += 1;
+                                            if didread < count {
+                                                let _ = input.parse::<syn::Token![,]>()?;
+                                            }
+                                        )*
+                                        Ok(Self {
+                                            span,
+                                            $(
+                                                $name
+                                            ),*
+                                        })
+                                    }
                                 }
-                            )*
-                            Ok(Self {
-                                span,
-                                $(
-                                    $name
-                                ),*
-                            })
+                            }
+                            
                         }
                     }
 
@@ -2787,3 +2395,5 @@ pub trait TryForEachOperand
     where
         F: FnMut(&Operand) -> Result<(), E>;
 }
+
+

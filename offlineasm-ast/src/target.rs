@@ -10,6 +10,7 @@ use std::{
     rc::Rc,
 };
 
+pub mod x86_proc;
 pub mod x86;
 
 pub struct Assembler {

@@ -1,3 +1,4 @@
+use core::task;
 use std::cell::LazyCell;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -7,6 +8,7 @@ use std::sync::LazyLock;
 use proc_macro2::Span;
 use syn::Ident;
 
+use crate::instructions;
 use crate::instructions::*;
 use crate::operands::*;
 use crate::registers::*;
@@ -25,6 +27,7 @@ pub enum OperandKind {
     Ptr,
     Double,
     Float,
+    None,
 }
 
 fn register(name: impl Display) -> String {
@@ -373,6 +376,17 @@ impl LocalLabelReference {
 }
 
 impl Operand {
+    pub fn x86_call_operand(&self) -> syn::Result<String> {
+        match self {
+            Operand::LabelReference(lref) => lref.x86_call_operand(),
+            Operand::Address(addr) => addr.x86_call_operand(),
+            _ => Err(syn::Error::new(
+                self.span(),
+                &format!("invalid operand kind for call operand: {}", self),
+            )),
+        }
+    }
+
     pub fn supports_8bit_on_x86(&self) -> syn::Result<bool> {
         match self {
             Operand::Address(addr) => addr.supports_8bit_on_x86(),
@@ -424,6 +438,12 @@ impl Operand {
     }
 }
 
+impl LocalLabel {
+    pub fn asm_label(&self) -> syn::Result<String> {
+        Ok(Assembler::local_label_reference(&self.name))
+    }
+}
+
 impl Instruction {
     pub fn x86_operands(&self, kinds: &[OperandKind]) -> syn::Result<String> {
         let mut output = Vec::new();
@@ -445,8 +465,8 @@ impl Instruction {
     ) -> syn::Result<String> {
         let ops = self.operands();
         Ok(order_operands(&[
-            ops[1].x86_load_operand(asm, dst_kind, ops[0])?,
-            ops[0].x86_operand(src_kind)?,
+            ops[1].x86_load_operand(asm, src_kind, ops[0])?,
+            ops[0].x86_operand(dst_kind)?,
         ]))
     }
 
@@ -459,6 +479,7 @@ impl Instruction {
             OperandKind::Ptr => "q",
             OperandKind::Double => "sd",
             OperandKind::Float => "ss",
+            OperandKind::None => unreachable!(),
         }
     }
 
@@ -471,6 +492,7 @@ impl Instruction {
             OperandKind::Ptr => 8,
             OperandKind::Double => 8,
             OperandKind::Float => 4,
+            OperandKind::None => unreachable!(),
         }
     }
 
@@ -636,19 +658,22 @@ impl Instruction {
 
     pub fn handle_x86_fp_branch(
         &self,
+        kind: OperandKind,
         branch_opcode: &str,
         reverse: bool,
         asm: &mut Assembler,
     ) -> syn::Result<()> {
         if reverse {
             asm.format(format_args!(
-                "ucomisd {rhs}, {lhs}\n",
+                "ucomi{suffix} {rhs}, {lhs}\n",
+                suffix = Self::x86_suffix(kind),
                 lhs = self.operands()[0].x86_operand(OperandKind::Double)?,
                 rhs = self.operands()[1].x86_operand(OperandKind::Double)?,
             ));
         } else {
             asm.format(format_args!(
-                "ucomisd {lhs}, {rhs}\n",
+                "ucomi{suffix} {lhs}, {rhs}\n",
+                suffix = Self::x86_suffix(kind),
                 lhs = self.operands()[0].x86_operand(OperandKind::Double)?,
                 rhs = self.operands()[1].x86_operand(OperandKind::Double)?,
             ));
@@ -686,7 +711,7 @@ impl Instruction {
                 ));
             }
 
-            (Operand::GPRegister(r), Operand::Constant(c))
+            (Operand::GPRegister(_), Operand::Constant(c))
                 if c.value == ConstantValue::Immediate(0)
                     && matches!(opcode_suffix, "e" | "ne") =>
             {
@@ -933,6 +958,49 @@ impl Instruction {
             "{branch_opcode} {label}\n",
             branch_opcode = branch_opcode,
             label = jump_target.asm_label()?,
+        ));
+
+        Ok(())
+    }
+
+    pub fn handle_x86_sub_branch(
+        &self,
+        branch_opcode: &str,
+        kind: OperandKind,
+        asm: &mut Assembler,
+    ) -> syn::Result<()> {
+        let operands = self.operands();
+        let dst = operands[0];
+        let lhs = operands[1];
+        let rhs = operands[2];
+        let target = operands[3];
+
+        if dst == lhs {
+            asm.format(format_args!(
+                "neg{suffix} {dst}\n",
+                suffix = Self::x86_suffix(kind),
+                dst = dst.x86_operand(kind)?,
+            ));
+
+            asm.format(format_args!(
+                "add{suffix} {rhs}, {dst}\n",
+                suffix = Self::x86_suffix(kind),
+                rhs = rhs.x86_operand(kind)?,
+                dst = dst.x86_operand(kind)?,
+            ));
+        } else {
+            self.handle_x86_opn(
+                &format!("sub{suffix}", suffix = Self::x86_suffix(kind)),
+                kind,
+                3,
+                asm,
+            )?;
+        }
+
+        asm.format(format_args!(
+            "{branch_opcode} {label}\n",
+            branch_opcode = branch_opcode,
+            label = target.asm_label()?,
         ));
 
         Ok(())
@@ -1352,6 +1420,62 @@ impl Instruction {
         Ok(())
     }
 
+    pub fn convert_quad_to_floating_point(
+        &self,
+        kind: OperandKind,
+        asm: &mut Assembler,
+    ) -> syn::Result<()> {
+        let operands = self.operands();
+        let scratch1 = operands[2];
+        let src = operands[1];
+        let dst = operands[0];
+
+        let scratch2 = Operand::SpecialRegister(X64_SCRATCH_REGISTER.with(|reg| (**reg).clone()));
+
+        let slow = LocalLabel::unique("slow");
+        let done = LocalLabel::unique("done");
+
+        let seq: Vec<Stmt> = vec![
+            btqs(
+                src.clone(),
+                src.clone(),
+                LocalLabelReference::new(slow.clone()),
+            )
+            .into(),
+            if kind == OperandKind::Float {
+                cq2fs(dst.clone(), src.clone()).into()
+            } else {
+                cq2ds(dst.clone(), src.clone()).into()
+            },
+            jmp(LocalLabelReference::new(done.clone())).into(),
+            slow.into(),
+            mv(scratch1.clone(), src.clone()).into(),
+            mv(scratch2.clone(), src.clone()).into(),
+            urshiftq(scratch1.clone(), 1usize).into(),
+            andq(scratch1.clone(), scratch1.clone(), 1usize).into(),
+            orq(scratch1.clone(), scratch1.clone(), scratch2.clone()).into(),
+            if kind == OperandKind::Float {
+                cq2fs(dst.clone(), scratch1.clone()).into()
+            } else {
+                cq2ds(dst.clone(), scratch1.clone()).into()
+            },
+            if kind == OperandKind::Float {
+                addf(dst.clone(), dst.clone(), dst.clone()).into()
+            } else {
+                addd(dst.clone(), dst.clone(), dst.clone()).into()
+            },
+            done.into(),
+        ];
+
+        Stmt::Sequence(Rc::new(Sequence {
+            span: self.span(),
+            stmts: seq,
+        }))
+        .lower(asm)?;
+
+        Ok(())
+    }
+
     pub fn truncate_floating_point_to_quad(
         &self,
         kind: OperandKind,
@@ -1467,20 +1591,18 @@ impl Instruction {
 
     pub fn lower_x86(&self, asm: &mut Assembler) -> syn::Result<()> {
         match self {
-            Self::Addi(_) => self.handle_x86_add(OperandKind::Int, asm),
-            Self::Addp(_) => self.handle_x86_add(OperandKind::Ptr, asm),
-            Self::Addq(_) => self.handle_x86_add(OperandKind::Quad, asm),
-            Self::Andi(_) => self.handle_x86_op("andl", OperandKind::Int, asm),
-            Self::Andp(_) => self.handle_x86_op("andq", OperandKind::Ptr, asm),
-            Self::Andq(_) => self.handle_x86_op("andq", OperandKind::Quad, asm),
-            Self::Andf(_) => self.handle_x86_op("andps", OperandKind::Float, asm),
-            Self::Andd(_) => self.handle_x86_op("andpd", OperandKind::Double, asm),
-            Self::Lshifti(_) => self.handle_x86_shift("sall", OperandKind::Int, asm),
-            Self::Lshiftp(_) => self.handle_x86_shift("salq", OperandKind::Ptr, asm),
-            Self::Lshiftq(_) => self.handle_x86_shift("salq", OperandKind::Quad, asm),
-            Self::Muli(_) => self.handle_x86_mul(OperandKind::Int, asm),
-            Self::Mulp(_) => self.handle_x86_mul(OperandKind::Ptr, asm),
-            Self::Mulq(_) => self.handle_x86_mul(OperandKind::Quad, asm),
+            Self::Addi(_) | Self::Addp(_) | Self::Addq(_) => {
+                self.handle_x86_add(self.x86_operand_kind(), asm)
+            }
+            Self::Andi(_) | Self::Andp(_) | Self::Andq(_) | Self::Andf(_) | Self::Andd(_) => {
+                self.handle_x86_op("and", self.x86_operand_kind(), asm)
+            }
+            Self::Lshifti(_) | Self::Lshiftp(_) | Self::Lshiftq(_) => {
+                self.handle_x86_shift("sal", self.x86_operand_kind(), asm)
+            }
+            Self::Muli(_) | Self::Mulp(_) | Self::Mulq(_) => {
+                self.handle_x86_mul(self.x86_operand_kind(), asm)
+            }
             Self::Negi(negi) => {
                 asm.format(format_args!(
                     "neg{suffix} {src_dst}",
@@ -1521,29 +1643,35 @@ impl Instruction {
                 Ok(())
             }
 
-            Self::Ori(_) => self.handle_x86_op("orl", OperandKind::Int, asm),
-            Self::Orp(_) => self.handle_x86_op("orq", OperandKind::Ptr, asm),
-            Self::Orq(_) => self.handle_x86_op("orq", OperandKind::Quad, asm),
+            Self::Ori(_) | Self::Orp(_) | Self::Orq(_) | Self::Orh(_) => {
+                self.handle_x86_op("or", self.x86_operand_kind(), asm)
+            }
+
             Self::Orf(_) => self.handle_x86_op("orps", OperandKind::Float, asm),
             Self::Ord(_) => self.handle_x86_op("orpd", OperandKind::Double, asm),
-            Self::Orh(_) => self.handle_x86_op("orh", OperandKind::Half, asm),
-            Self::Rshifti(_) => self.handle_x86_shift("sarl", OperandKind::Int, asm),
-            Self::Rshiftp(_) => self.handle_x86_shift("sarq", OperandKind::Ptr, asm),
-            Self::Rshiftq(_) => self.handle_x86_shift("sarq", OperandKind::Quad, asm),
-            Self::Urshifti(_) => self.handle_x86_shift("shrl", OperandKind::Int, asm),
-            Self::Urshiftp(_) => self.handle_x86_shift("shrl", OperandKind::Ptr, asm),
-            Self::Urshiftq(_) => self.handle_x86_shift("shrl", OperandKind::Quad, asm),
-            Self::Rrotatei(_) => self.handle_x86_shift("rorl", OperandKind::Int, asm),
-            Self::Rrotateq(_) => self.handle_x86_shift("rorq", OperandKind::Quad, asm),
-            Self::Lrotatei(_) => self.handle_x86_shift("roll", OperandKind::Int, asm),
-            Self::Lrotateq(_) => self.handle_x86_shift("rolq", OperandKind::Quad, asm),
 
-            Self::Subi(_) => self.handle_x86_sub(OperandKind::Int, asm),
-            Self::Subp(_) => self.handle_x86_sub(OperandKind::Ptr, asm),
-            Self::Subq(_) => self.handle_x86_sub(OperandKind::Quad, asm),
-            Self::Xori(_) => self.handle_x86_op("xorl", OperandKind::Int, asm),
-            Self::Xorp(_) => self.handle_x86_op("xorq", OperandKind::Ptr, asm),
-            Self::Xorq(_) => self.handle_x86_op("xorq", OperandKind::Quad, asm),
+            Self::Rshifti(_) | Self::Rshiftp(_) | Self::Rshiftq(_) => {
+                self.handle_x86_shift("sar", self.x86_operand_kind(), asm)
+            }
+            Self::Urshifti(_) | Self::Urshiftp(_) | Self::Urshiftq(_) => {
+                self.handle_x86_shift("shrl", self.x86_operand_kind(), asm)
+            }
+            Self::Rrotatei(_) | Self::Rrotateq(_) => {
+                self.handle_x86_shift("ror", self.x86_operand_kind(), asm)
+            }
+
+            Self::Lrotatei(_) | Self::Lrotateq(_) => {
+                self.handle_x86_shift("rol", self.x86_operand_kind(), asm)
+            }
+
+            Self::Subi(_) | Self::Subp(_) | Self::Subq(_) => {
+                self.handle_x86_sub(self.x86_operand_kind(), asm)
+            }
+
+            Self::Xori(_) | Self::Xorp(_) | Self::Xorq(_) => {
+                self.handle_x86_op("xor", self.x86_operand_kind(), asm)
+            }
+
             Self::Leap(lea) => Self::emit_x86_lea(&lea.dst, &lea.src, OperandKind::Ptr, asm),
             Self::Leai(lea) => Self::emit_x86_lea(&lea.dst, &lea.src, OperandKind::Int, asm),
             Self::Loadi(_) => {
@@ -1553,19 +1681,715 @@ impl Instruction {
                 Ok(())
             }
 
-            Self::Storei(_) => {
-                let operands = self.x86_operands(&[OperandKind::Int, OperandKind::Int])?;
-                asm.format(format_args!("movl {operands}",));
+            Self::Storei(st) => {
+                let src = st.src.x86_operand(OperandKind::Int)?;
+                let dst = st.addr.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movl {src}, {dst}",));
 
                 Ok(())
             }
 
-            Self::Loadis(_) => {
-                let operands = self.x86_load_operands(asm, OperandKind::Int, OperandKind::Int)?;
-                asm.format(format_args!("movslq {operands}",));
+            Self::Loadis(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Int, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movslq {src}, {dst}",));
 
                 Ok(())
             }
+
+            Self::Loadp(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Ptr, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Ptr)?;
+
+                asm.format(format_args!("movq {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Storep(st) => {
+                let src = st.src.x86_operand(OperandKind::Ptr)?;
+                let dst = st.dst.x86_operand(OperandKind::Ptr)?;
+
+                asm.format(format_args!("movq {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadq(ld) => {
+                let src = ld.src.x86_load_operand(asm, OperandKind::Quad, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Quad)?;
+
+                asm.format(format_args!("movq {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Storeq(st) => {
+                let src = st.src.x86_operand(OperandKind::Quad)?;
+                let dst = st.dst.x86_operand(OperandKind::Quad)?;
+
+                asm.format(format_args!("movq {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadb(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Int, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movzbl {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadbsi(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Int, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movsbl {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadbsq(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Quad, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movsbl {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadh(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Int, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movzwl {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadhsi(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Int, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movswl {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadhsq(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Quad, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Int)?;
+
+                asm.format(format_args!("movswq {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Storeb(st) => {
+                let src = st.src.x86_operand(OperandKind::Byte)?;
+                let dst = st.addr.x86_operand(OperandKind::Ptr)?;
+
+                asm.format(format_args!("movb {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Storeh(st) => {
+                let src = st.src.x86_operand(OperandKind::Half)?;
+                let dst = st.addr.x86_operand(OperandKind::Half)?;
+
+                asm.format(format_args!("movw {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadf(ld) => {
+                let src = ld.addr.x86_load_operand(asm, OperandKind::Float, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Float)?;
+
+                asm.format(format_args!("movss {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Loadd(ld) => {
+                let src = ld
+                    .addr
+                    .x86_load_operand(asm, OperandKind::Double, &ld.dst)?;
+                let dst = ld.dst.x86_operand(OperandKind::Double)?;
+
+                asm.format(format_args!("movsd {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Addf(_) | Self::Addd(_) => self.handle_x86_add_fp(self.x86_operand_kind(), asm),
+            Self::Subf(_) | Self::Subd(_) => self.handle_x86_sub_fp(self.x86_operand_kind(), asm),
+            Self::Mulf(_) | Self::Muld(_) => self.handle_x86_mul_fp(self.x86_operand_kind(), asm),
+            Self::Divf(_) | Self::Divd(_) => self.handle_x86_div_fp(self.x86_operand_kind(), asm),
+
+            Self::Sqrtf(Sqrtf { dst, src, .. }) | Self::Sqrtd(Sqrtd { dst, src, .. }) => {
+                let kind = self.x86_operand_kind();
+                asm.format(format_args!(
+                    "sqrt{suffix} {src}, {dst}",
+                    suffix = Self::x86_suffix(kind),
+                    src = src.x86_operand(kind)?,
+                    dst = dst.x86_operand(kind)?
+                ));
+                Ok(())
+            }
+
+            Self::Roundf(Roundf { dst, src, .. }) | Self::Roundd(Roundd { dst, src, .. }) => {
+                let kind = self.x86_operand_kind();
+                asm.format(format_args!(
+                    "round{suffix} $0, {src}, {dst}",
+                    suffix = Self::x86_suffix(kind),
+                    src = src.x86_operand(kind)?,
+                    dst = dst.x86_operand(kind)?
+                ));
+                Ok(())
+            }
+
+            Self::Floorf(Floorf { dst, src, .. }) | Self::Floord(Floord { dst, src, .. }) => {
+                let kind = self.x86_operand_kind();
+                asm.format(format_args!(
+                    "round{suffix} $1, {src}, {dst}",
+                    suffix = Self::x86_suffix(kind),
+                    src = src.x86_operand(kind)?,
+                    dst = dst.x86_operand(kind)?
+                ));
+                Ok(())
+            }
+
+            Self::Ceilf(Ceilf { dst, src, .. }) | Self::Ceild(Ceild { dst, src, .. }) => {
+                let kind = self.x86_operand_kind();
+                asm.format(format_args!(
+                    "round{suffix} $2, {src}, {dst}",
+                    suffix = Self::x86_suffix(kind),
+                    src = src.x86_operand(kind)?,
+                    dst = dst.x86_operand(kind)?
+                ));
+                Ok(())
+            }
+
+            Self::Truncatef(Truncatef { dst, src, .. })
+            | Self::Truncated(Truncated { dst, src, .. }) => {
+                let kind = self.x86_operand_kind();
+                asm.format(format_args!(
+                    "round{suffix} $3, {src}, {dst}",
+                    suffix = Self::x86_suffix(kind),
+                    src = src.x86_operand(kind)?,
+                    dst = dst.x86_operand(kind)?
+                ));
+                Ok(())
+            }
+
+            Self::Truncatef2i(Truncatef2i { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttss2si {}, {}",
+                    src.x86_operand(OperandKind::Float)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Truncated2i(Truncated2i { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {}, {}",
+                    src.x86_operand(OperandKind::Double)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Truncatef2q(Truncatef2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttss2si {}, {}",
+                    src.x86_operand(OperandKind::Float)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Truncated2q(Truncated2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {}, {}",
+                    src.x86_operand(OperandKind::Double)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Truncatef2is(Truncatef2is { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttss2si {}, {}",
+                    src.x86_operand(OperandKind::Float)?,
+                    dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+            Self::Truncatef2qs(Truncatef2qs { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttss2si {}, {}",
+                    src.x86_operand(OperandKind::Float)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Truncated2is(Truncated2is { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {}, {}",
+                    src.x86_operand(OperandKind::Double)?,
+                    dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+            Self::Truncated2qs(Truncated2qs { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {}, {}",
+                    src.x86_operand(OperandKind::Double)?,
+                    dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+            Self::Ci2d(Ci2d { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2sd {}, {}",
+                    src.x86_operand(OperandKind::Quad)?,
+                    dst.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+            Self::Ci2ds(Ci2ds { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2sd {}, {}",
+                    src.x86_operand(OperandKind::Int)?,
+                    dst.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+            Self::Ci2fs(Ci2fs { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2ss {}, {}",
+                    src.x86_operand(OperandKind::Int)?,
+                    dst.x86_operand(OperandKind::Float)?
+                ));
+                Ok(())
+            }
+            Self::Ci2f(Ci2f { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2ss {}, {}",
+                    src.x86_operand(OperandKind::Quad)?,
+                    dst.x86_operand(OperandKind::Float)?
+                ));
+                Ok(())
+            }
+
+            Self::Cq2f(_) => self.convert_quad_to_floating_point(OperandKind::Float, asm),
+            Self::Cq2d(_) => self.convert_quad_to_floating_point(OperandKind::Double, asm),
+            Self::Cq2fs(Cq2fs { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2ssq {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Quad)?,
+                    dst = dst.x86_operand(OperandKind::Float)?
+                ));
+                Ok(())
+            }
+
+            Self::Cq2ds(Cq2ds { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsi2sdq {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Quad)?,
+                    dst = dst.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+
+            Self::Cd2f(Cd2f { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtsd2ss {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Double)?,
+                    dst = dst.x86_operand(OperandKind::Float)?
+                ));
+                Ok(())
+            }
+            Self::Cf2d(Cf2d { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvtss2sd {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Float)?,
+                    dst = dst.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+
+            Self::Bdeq(Bdeq {
+                lhs, rhs, target, ..
+            }) => {
+                asm.format(format_args!(
+                    "ucomisd {lhs}, {rhs}",
+                    lhs = lhs.x86_operand(OperandKind::Double)?,
+                    rhs = rhs.x86_operand(OperandKind::Double)?
+                ));
+
+                if lhs == rhs {
+                    // this is just a jump ordered, which is a jnp.
+                    asm.format(format_args!("jnp {}", target.asm_label()?));
+                } else {
+                    let is_unordered = LocalLabel::unique("bdeq");
+                    asm.format(format_args!("jp {}", is_unordered.asm_label()?));
+                    asm.format(format_args!("je {}", target.asm_label()?));
+                    is_unordered.lower(asm);
+                }
+
+                Ok(())
+            }
+
+            Self::Bdneq(_) => self.handle_x86_fp_branch(OperandKind::Double, "jne", false, asm),
+            Self::Bdgt(_) => self.handle_x86_fp_branch(OperandKind::Double, "ja", false, asm),
+            Self::Bdgteq(_) => self.handle_x86_fp_branch(OperandKind::Double, "jae", false, asm),
+            Self::Bdlt(_) => self.handle_x86_fp_branch(OperandKind::Double, "ja", true, asm),
+            Self::Bdlteq(_) => self.handle_x86_fp_branch(OperandKind::Double, "jae", true, asm),
+            Self::Bdequn(_) => self.handle_x86_fp_branch(OperandKind::Double, "je", false, asm),
+            Self::Bdnequn(Bdnequn {
+                lhs, rhs, target, ..
+            }) => {
+                asm.format(format_args!(
+                    "ucomisd {lhs}, {rhs}",
+                    lhs = lhs.x86_operand(OperandKind::Double)?,
+                    rhs = rhs.x86_operand(OperandKind::Double)?
+                ));
+
+                if lhs == rhs {
+                    // this is just a jump unordered, which is a jp.
+                    asm.format(format_args!("jp {}", target.asm_label()?));
+                } else {
+                    let is_unordered = LocalLabel::unique("bdnequn");
+                    let is_equal = LocalLabel::unique("bdnequn");
+                    asm.format(format_args!("jp {}", is_unordered.asm_label()?));
+                    asm.format(format_args!("je {}", is_equal.asm_label()?));
+                    is_unordered.lower(asm);
+                    asm.format(format_args!("jmp {}", target.asm_label()?));
+                    is_equal.lower(asm);
+                }
+
+                Ok(())
+            }
+
+            Self::Bdgtun(_) => self.handle_x86_fp_branch(OperandKind::Double, "jb", true, asm),
+            Self::Bdgtequn(_) => self.handle_x86_fp_branch(OperandKind::Double, "jbe", true, asm),
+            Self::Bdltun(_) => self.handle_x86_fp_branch(OperandKind::Double, "jb", false, asm),
+            Self::Bdltequn(_) => self.handle_x86_fp_branch(OperandKind::Double, "jbe", false, asm),
+            Self::Bfeq(Bfeq {
+                lhs, rhs, target, ..
+            }) => {
+                asm.format(format_args!(
+                    "ucomiss {lhs}, {rhs}",
+                    lhs = lhs.x86_operand(OperandKind::Float)?,
+                    rhs = rhs.x86_operand(OperandKind::Float)?
+                ));
+
+                if lhs == rhs {
+                    // this is just a jump ordered, which is a jnp.
+                    asm.format(format_args!("jnp {}", target.asm_label()?));
+                } else {
+                    let is_unordered = LocalLabel::unique("bfeq");
+                    asm.format(format_args!("jp {}", is_unordered.asm_label()?));
+                    asm.format(format_args!("je {}", target.asm_label()?));
+                    is_unordered.lower(asm);
+                }
+
+                Ok(())
+            }
+
+            Self::Bfgt(_) => self.handle_x86_fp_branch(OperandKind::Float, "ja", false, asm),
+            Self::Bfgteq(_) => self.handle_x86_fp_branch(OperandKind::Float, "jae", false, asm),
+            Self::Bflt(_) => self.handle_x86_fp_branch(OperandKind::Float, "ja", true, asm),
+            Self::Bflteq(_) => self.handle_x86_fp_branch(OperandKind::Float, "jae", true, asm),
+            Self::Bfgtun(_) => self.handle_x86_fp_branch(OperandKind::Float, "jb", true, asm),
+            Self::Bfgtequn(_) => self.handle_x86_fp_branch(OperandKind::Float, "jbe", true, asm),
+            Self::Bfltun(_) => self.handle_x86_fp_branch(OperandKind::Float, "jb", false, asm),
+            Self::Bfltequn(_) => self.handle_x86_fp_branch(OperandKind::Float, "jbe", false, asm),
+
+            Self::Btd2i(Btd2i {
+                dst, src, target, ..
+            }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Double)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!(
+                    "cmpl $0x80000000, {dst}",
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!("je {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Td2i(Td2i { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Double)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+
+            Self::Bcd2i(Bcd2i {
+                dst, src, target, ..
+            }) => {
+                asm.format(format_args!(
+                    "cvttsd2si {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Double)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!(
+                    "testl {dst}, {dst}",
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!("je {}", target.asm_label()?));
+                asm.format(format_args!(
+                    "cvtsi2sd {dst}, %xmm7",
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!(
+                    "ucomisd {src}, %xmm7",
+                    src = src.x86_operand(OperandKind::Double)?
+                ));
+                asm.format(format_args!("jp {}", target.asm_label()?));
+                asm.format(format_args!("jne {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Movdz(Movdz { dst, .. }) => {
+                asm.format(format_args!(
+                    "xorpd {dst}, {dst}",
+                    dst = dst.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+
+            Self::Pop(Pop { dst, .. }) => {
+                asm.format(format_args!(
+                    "pop {dst}",
+                    dst = dst.x86_operand(OperandKind::Ptr)?
+                ));
+                Ok(())
+            }
+
+            Self::Popv(Popv { dst, .. }) => {
+                asm.format(format_args!(
+                    "movdqu (%rsp), {dst}",
+                    dst = dst.x86_operand(OperandKind::Double)?
+                ));
+                asm.format(format_args!("add $16, %rsp"));
+                Ok(())
+            }
+
+            Self::Push(Push { src, .. }) => {
+                asm.format(format_args!(
+                    "push {src}",
+                    src = src.x86_operand(OperandKind::Ptr)?
+                ));
+                Ok(())
+            }
+
+            Self::Pushv(Pushv { src, .. }) => {
+                asm.format(format_args!("sub $16, %rsp"));
+                asm.format(format_args!(
+                    "movdqu {src}, (%rsp)",
+                    src = src.x86_operand(OperandKind::Double)?
+                ));
+                Ok(())
+            }
+
+            Self::Mv(_) => {
+                self.handle_move(asm)?;
+                Ok(())
+            }
+
+            Self::Sxi2q(Sxi2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movslq {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Int)?,
+                    dst = dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+
+            Self::Zxi2q(Zxi2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movl {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Int)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+
+            Self::Sxb2i(Sxb2i { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movsbl {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Byte)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+            Self::Sxh2i(Sxh2i { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movswl {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Half)?,
+                    dst = dst.x86_operand(OperandKind::Int)?
+                ));
+                Ok(())
+            }
+
+            Self::Sxb2q(Sxb2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movsbq {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Byte)?,
+                    dst = dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+
+            Self::Sxh2q(Sxh2q { dst, src, .. }) => {
+                asm.format(format_args!(
+                    "movswq {src}, {dst}",
+                    src = src.x86_operand(OperandKind::Half)?,
+                    dst = dst.x86_operand(OperandKind::Quad)?
+                ));
+                Ok(())
+            }
+
+            Self::Nop(_) => {
+                asm.format(format_args!("nop"));
+                Ok(())
+            }
+
+            Self::Bieq(_) | Self::Bpeq(_) | Self::Bqeq(_) | Self::Bbeq(_) => {
+                self.handle_x86_branch("je", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bineq(_) | Self::Bpneq(_) | Self::Bqneq(_) | Self::Bbneq(_) => {
+                self.handle_x86_branch("jne", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bia(_) | Self::Bpa(_) | Self::Bqa(_) | Self::Bba(_) => {
+                self.handle_x86_branch("ja", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Biaeq(_) | Self::Bpaeq(_) | Self::Bqaeq(_) | Self::Bbaeq(_) => {
+                self.handle_x86_branch("jae", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bib(_) | Self::Bpb(_) | Self::Bqb(_) | Self::Bbb(_) => {
+                self.handle_x86_branch("jb", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bibeq(_) | Self::Bpbeq(_) | Self::Bqbeq(_) | Self::Bbbeq(_) => {
+                self.handle_x86_branch("jbe", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bigt(_) | Self::Bpgt(_) | Self::Bqgt(_) | Self::Bbgt(_) => {
+                self.handle_x86_branch("jg", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bilteq(_) | Self::Bplt(_) | Self::Bqlt(_) | Self::Bblteq(_) => {
+                self.handle_x86_branch("jle", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bigteq(_) | Self::Bpgteq(_) | Self::Bqgteq(_) | Self::Bbgteq(_) => {
+                self.handle_x86_branch("jge", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Btis(_) | Self::Btps(_) | Self::Btqs(_) | Self::Btbs(_) => {
+                self.handle_x86_branch_test("js", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Btiz(_) | Self::Btpz(_) | Self::Btqz(_) | Self::Btbz(_) => {
+                self.handle_x86_branch_test("jz", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Btinz(_) | Self::Btpnz(_) | Self::Btqnz(_) | Self::Btbnz(_) => {
+                self.handle_x86_branch_test("jnz", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Jmp(Jmp { target, .. }) => {
+                asm.format(format_args!("jmp {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Baddio(_) | Self::Baddpo(_) | Self::Baddqo(_) => {
+                let kind = self.x86_operand_kind();
+                let suffix = Self::x86_suffix(kind);
+                self.handle_x86_op_branch(&format!("add{suffix}"), "jo", kind, asm)?;
+                Ok(())
+            }
+
+            Self::Baddis(_) | Self::Baddps(_) | Self::Baddqs(_) => {
+                let kind = self.x86_operand_kind();
+                let suffix = Self::x86_suffix(kind);
+                self.handle_x86_op_branch(&format!("add{suffix}"), "js", kind, asm)?;
+                Ok(())
+            }
+
+            Self::Baddiz(_) | Self::Baddpz(_) | Self::Baddqz(_) => {
+                let kind = self.x86_operand_kind();
+                let suffix = Self::x86_suffix(kind);
+                self.handle_x86_op_branch(&format!("add{suffix}"), "jz", kind, asm)?;
+                Ok(())
+            }
+
+            Self::Baddinz(_) | Self::Baddpnz(_) | Self::Baddqnz(_) => {
+                let kind = self.x86_operand_kind();
+                let suffix = Self::x86_suffix(kind);
+                self.handle_x86_op_branch(&format!("add{suffix}"), "jnz", kind, asm)?;
+                Ok(())
+            }
+
+            Self::Bsubio(_) => self.handle_x86_sub_branch("jo", OperandKind::Int, asm),
+            Self::Bsubis(_) => self.handle_x86_sub_branch("js", OperandKind::Int, asm),
+            Self::Bsubiz(_) => self.handle_x86_sub_branch("jz", OperandKind::Int, asm),
+            Self::Bsubinz(_) => self.handle_x86_sub_branch("jnz", OperandKind::Int, asm),
+
+            Self::Bmulio(_) => self.handle_x86_op_branch("imull", "jo", OperandKind::Int, asm),
+            Self::Bmulis(_) => self.handle_x86_op_branch("imull", "js", OperandKind::Int, asm),
+            Self::Bmuliz(_) => self.handle_x86_op_branch("imull", "jz", OperandKind::Int, asm),
+            Self::Bmulinz(_) => self.handle_x86_op_branch("imull", "jnz", OperandKind::Int, asm),
+
+            Self::Borio(_) => self.handle_x86_op_branch("orl", "jo", OperandKind::Int, asm),
+            Self::Boris(_) => self.handle_x86_op_branch("orl", "js", OperandKind::Int, asm),
+            Self::Boriz(_) => self.handle_x86_op_branch("orl", "jz", OperandKind::Int, asm),
+            Self::Borinz(_) => self.handle_x86_op_branch("orl", "jnz", OperandKind::Int, asm),
+
+            Self::Breakpoint(_) => {
+                asm.puts("int $3");
+                Ok(())
+            }
+
+            Self::Call(Call { target, .. }) => {
+                let op = target.x86_call_operand()?;
+                asm.format(format_args!("call {op}"));
+                Ok(())
+            }
+
+            Self::Ret(_) => {
+                asm.puts("ret");
+                Ok(())
+            }
+
             _ => todo!(),
         }
     }
