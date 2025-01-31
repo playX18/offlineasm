@@ -590,7 +590,7 @@ impl Parse for Stmt {
 impl Parse for Toplevel {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut stmts = Vec::new();
-        let mut settings = HashMap::new();  
+        let mut settings = HashMap::new();
         while !input.is_empty() {
             if input.peek(kw::setting) {
                 let _ = input.parse::<kw::setting>()?;
@@ -610,8 +610,10 @@ pub fn peek_not_operand(input: ParseStream) -> bool {
     Instruction::peek(input)
         || input.peek(syn::Token![->])
         || (input.peek(syn::Ident) && input.peek2(syn::Token![:]))
-        || input.peek(syn::Token![macro])       
+        || input.peek(syn::Token![macro])
         || input.peek(syn::Token![if])
-        || (input.peek(syn::Token![const]) && input.peek2(syn::Ident) && input.peek3(syn::Token![=]))
+        || (input.peek(syn::Token![const])
+            && input.peek2(syn::Ident)
+            && input.peek3(syn::Token![=]))
         || input.peek(syn::token::Brace)
 }

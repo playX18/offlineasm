@@ -11,6 +11,7 @@ regex = "1.11.1"
 smallvec = "1.13.2"
 syn = { version = "2.0.96", features = ["full"] }
 macro_extra = { path = "../macro-helpers" }
+quote = "1.0.38"
 
 [features]
 proc-macro = ["proc-macro2/proc-macro"]

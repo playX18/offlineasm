@@ -10,7 +10,10 @@ impl Instruction {
         self.try_map_operands(|op| op.substitute(mapping))
     }
 
-    fn rename_labels(&self, mapping: &HashMap<Rc<LocalLabel>, Rc<LocalLabel>>) -> syn::Result<Self> {
+    fn rename_labels(
+        &self,
+        mapping: &HashMap<Rc<LocalLabel>, Rc<LocalLabel>>,
+    ) -> syn::Result<Self> {
         self.try_map_operands(|op| op.rename_labels(mapping))
     }
 }
@@ -215,8 +218,12 @@ impl Operand {
                 let left = expr.lhs.fold(constants)?;
                 let right = expr.rhs.fold(constants)?;
 
-                let left = left.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Left operand is not an immediate"))?;
-                let right = right.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Right operand is not an immediate"))?;
+                let left = left.try_immediate().ok_or_else(|| {
+                    syn::Error::new(expr.span, "Left operand is not an immediate")
+                })?;
+                let right = right.try_immediate().ok_or_else(|| {
+                    syn::Error::new(expr.span, "Right operand is not an immediate")
+                })?;
 
                 match expr.op {
                     BinaryOperator::Add => Ok(Self::Constant(Constant {
@@ -252,7 +259,10 @@ impl Operand {
 
             Operand::UnaryExpression(expr) => {
                 let operand = expr.operand.fold(constants)?;
-                let operand = operand.try_immediate().ok_or_else(|| syn::Error::new(expr.span, "Operand is not an immediate"))? as i64;
+                let operand = operand
+                    .try_immediate()
+                    .ok_or_else(|| syn::Error::new(expr.span, "Operand is not an immediate"))?
+                    as i64;
 
                 match expr.op {
                     UnaryOperator::Neg => Ok(Self::Constant(Constant {
@@ -266,37 +276,45 @@ impl Operand {
                 }
             }
 
-            Operand::Address(addr) => {
-                match &addr.kind {
-                    AddressKind::Absolute { value } => {
-                        let value = value.fold(constants)?;
-                        Ok(Self::Address(Rc::new(Address {
-                            kind: AddressKind::Absolute { value },
-                            span: addr.span.clone(),
-                        })))
-                    }
-
-                    AddressKind::Base { base, offset } => {
-                        let base = base.fold(constants)?;
-                        let offset = offset.fold(constants)?;
-                        Ok(Self::Address(Rc::new(Address {
-                            kind: AddressKind::Base { base, offset },
-                            span: addr.span.clone(),
-                        })))
-                    }
-
-                    AddressKind::BaseIndex { base, index, scale, offset } => {
-                        let base = base.fold(constants)?;
-                        let index = index.fold(constants)?;
-                        let scale = scale.fold(constants)?;
-                        let offset = offset.fold(constants)?;
-                        Ok(Self::Address(Rc::new(Address {
-                            kind: AddressKind::BaseIndex { base, index, scale, offset },
-                            span: addr.span.clone(),
-                        })))
-                    }
+            Operand::Address(addr) => match &addr.kind {
+                AddressKind::Absolute { value } => {
+                    let value = value.fold(constants)?;
+                    Ok(Self::Address(Rc::new(Address {
+                        kind: AddressKind::Absolute { value },
+                        span: addr.span.clone(),
+                    })))
                 }
-            }
+
+                AddressKind::Base { base, offset } => {
+                    let base = base.fold(constants)?;
+                    let offset = offset.fold(constants)?;
+                    Ok(Self::Address(Rc::new(Address {
+                        kind: AddressKind::Base { base, offset },
+                        span: addr.span.clone(),
+                    })))
+                }
+
+                AddressKind::BaseIndex {
+                    base,
+                    index,
+                    scale,
+                    offset,
+                } => {
+                    let base = base.fold(constants)?;
+                    let index = index.fold(constants)?;
+                    let scale = scale.fold(constants)?;
+                    let offset = offset.fold(constants)?;
+                    Ok(Self::Address(Rc::new(Address {
+                        kind: AddressKind::BaseIndex {
+                            base,
+                            index,
+                            scale,
+                            offset,
+                        },
+                        span: addr.span.clone(),
+                    })))
+                }
+            },
 
             Operand::Name(name) => match name {
                 Name::Variable(var) => {
@@ -306,8 +324,8 @@ impl Operand {
                         Ok(self.clone())
                     }
                 }
-                _ => Ok(self.clone()),  
-            }
+                _ => Ok(self.clone()),
+            },
 
             _ => Ok(self.clone()),
         }
@@ -430,9 +448,9 @@ impl Stmt {
                 })))
             }
 
-            Self::Instruction(instr) => {
-                Ok(Self::Instruction(Rc::new(instr.try_map_operands(|op| op.fold(constants))?)))
-            }
+            Self::Instruction(instr) => Ok(Self::Instruction(Rc::new(
+                instr.try_map_operands(|op| op.fold(constants))?,
+            ))),
             _ => Ok(self.clone()),
         }
     }
@@ -502,9 +520,8 @@ pub fn prepass(toplevel: &Toplevel) -> syn::Result<Sequence> {
         stmts: toplevel.stmts.clone(),
         span: Span::call_site(),
     };
-    
+
     Ok(seq
         .demacroify(&HashMap::new())?
-        .rename_labels(&HashMap::new())?
-    )
+        .rename_labels(&HashMap::new())?)
 }

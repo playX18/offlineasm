@@ -3,7 +3,6 @@ use crate::instructions;
 use super::x86::*;
 use crate::instructions::*;
 
-
 macro_rules! x86_operand_kinds {
     (
         $(

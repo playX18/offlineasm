@@ -3,15 +3,16 @@ use crate::{
     operands::*,
     stmt::{Label, LabelMapping, LocalLabel, Sequence, Stmt},
 };
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
+use syn::Ident;
 use std::{
     cell::{LazyCell, RefCell},
     collections::HashMap,
     rc::Rc,
 };
 
-pub mod x86_proc;
 pub mod x86;
+pub mod x86_proc;
 
 pub struct Assembler {
     pub assembler_output: String,
@@ -29,11 +30,11 @@ impl Assembler {
     }
 
     pub fn add_extern_symbol(&mut self, symbol: syn::Ident) -> Operand {
-        let id = self.constants.len() + self.extern_symbols.len();
+        let id = self.extern_symbols.len();
         self.extern_symbols.push(symbol);
         Operand::Constant(Constant {
             span: Span::call_site(),
-            value: ConstantValue::Reference(id),
+            value: ConstantValue::SymReference(id),
         })
     }
 
@@ -42,7 +43,7 @@ impl Assembler {
         self.constants.push(value);
         Operand::Constant(Constant {
             span: Span::call_site(),
-            value: ConstantValue::Reference(id),
+            value: ConstantValue::ConstReference(id),
         })
     }
 
@@ -98,6 +99,38 @@ impl Assembler {
 
     pub fn global_label_reference(label: &Label) -> String {
         global_reference(&label.name.to_string())
+    }
+
+    pub fn compile(self) -> TokenStream {
+        let mut output = TokenStream::new();
+
+        let asm = &self.assembler_output;
+
+        let mut constants = Vec::new();//TokenStream::new();
+
+        for (i, constant) in self.constants.iter().enumerate() {
+            let id = Ident::new(&format!("_const_{}", i), Span::call_site());
+            constants.push(quote::quote! {
+                #id = const #constant
+            });
+        }
+
+        for (i, symbol) in self.extern_symbols.iter().enumerate() {
+            let id = Ident::new(&format!("_sym_{}", i), Span::call_site());
+            constants.push(quote::quote! {
+                #id = sym #symbol
+            });
+        }
+
+        output.extend(quote::quote! {
+            ::core::arch::global_asm! {
+                #asm,
+                #(#constants),*
+                options(att_syntax)
+            }
+        });
+
+        output
     }
 }
 
@@ -293,8 +326,30 @@ impl Label {
     }
 }
 
-impl Stmt {
+impl Sequence {
     pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
-        todo!()
+        for stmt in self.stmts.iter() {
+            stmt.lower(asm)?;
+        }
+        Ok(())
     }
 }
+
+impl Stmt {
+    pub fn lower(&self, asm: &mut Assembler) -> syn::Result<()> {
+        match self {
+            Stmt::Instruction(instr) => {
+                if is_x64() {
+                    instr.lower_x86(asm)
+                } else {
+                    todo!()
+                }
+            }
+            Stmt::Sequence(seq) => seq.lower(asm),
+            Stmt::Label(label) => label.lower(asm),
+            Stmt::LocalLabel(label) => label.lower(asm),
+            _ => Ok(())
+        }
+    }
+}
+

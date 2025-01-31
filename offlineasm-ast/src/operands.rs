@@ -241,7 +241,6 @@ impl From<usize> for Constant {
     }
 }
 
-
 impl Display for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.value)
@@ -262,7 +261,8 @@ pub enum ConstantValue {
     /// that are not defined in the current asm.
     ///
     /// This is produced by the transformation passes of offlineasm, users can't create it.
-    Reference(usize),
+    ConstReference(usize),
+    SymReference(usize),
 }
 
 impl PartialEq for ConstantValue {
@@ -287,7 +287,8 @@ impl Display for ConstantValue {
             ConstantValue::String(s) => write!(f, "{:?}", s),
             ConstantValue::Boolean(b) => write!(f, "{}", b),
             ConstantValue::Expression(_) => write!(f, "constexpr"),
-            ConstantValue::Reference(r) => write!(f, "{{ _ref_{} }}", r),
+            ConstantValue::ConstReference(r) => write!(f, "{{_const_{}}}", r),
+            ConstantValue::SymReference(r) => write!(f, "{{_sym_{}}}", r),
         }
     }
 }
@@ -613,7 +614,6 @@ impl From<isize> for Operand {
         Operand::Constant(Constant::from(value))
     }
 }
-
 
 impl From<i64> for Operand {
     fn from(value: i64) -> Self {

@@ -1,4 +1,3 @@
-use core::task;
 use std::cell::LazyCell;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -8,10 +7,8 @@ use std::sync::LazyLock;
 use proc_macro2::Span;
 use syn::Ident;
 
-use crate::instructions;
 use crate::instructions::*;
 use crate::operands::*;
-use crate::registers::*;
 use crate::stmt::*;
 
 use super::is_setting_set;
@@ -90,14 +87,6 @@ fn offset_register(offset: impl Display, reg: impl Display) -> String {
 
 fn order_operands(operands: &[String]) -> String {
     operands.join(", ")
-}
-
-fn constant(expr: impl Display) -> String {
-    format!("${expr}")
-}
-
-fn constant0x(expr: impl Display) -> String {
-    format!("$0x{expr}")
 }
 
 impl SpecialRegister {
@@ -255,7 +244,8 @@ impl Constant {
     pub fn x86_operand(&self) -> syn::Result<String> {
         match &self.value {
             ConstantValue::Immediate(imm) => Ok(format!("${imm}")),
-            ConstantValue::Reference(x) => Ok(format!("${{_ref_{x}}}")),
+            ConstantValue::ConstReference(x) => Ok(format!("${{_const_{x}}}")),
+            ConstantValue::SymReference(x) => Ok(format!("${{_sym_{x}}}")),
             _ => todo!(),
         }
     }
@@ -440,7 +430,7 @@ impl Operand {
 
 impl LocalLabel {
     pub fn asm_label(&self) -> syn::Result<String> {
-        Ok(Assembler::local_label_reference(&self.name))
+        Ok(Assembler::local_label_reference(self))
     }
 }
 
@@ -611,7 +601,7 @@ impl Instruction {
             Operand::Constant(c)
                 if matches!(
                     c.value,
-                    ConstantValue::Immediate(_) | ConstantValue::Reference(_)
+                    ConstantValue::Immediate(_) | ConstantValue::ConstReference(_)
                 ) =>
             {
                 asm.format(format_args!(
@@ -1144,7 +1134,7 @@ impl Instruction {
         let operands = self.operands();
         let rhs = operands[2];
 
-        if matches!(rhs, Operand::Constant(c) if matches!(c.value, ConstantValue::Immediate(_) | ConstantValue::Reference(_)))
+        if matches!(rhs, Operand::Constant(c) if matches!(c.value, ConstantValue::Immediate(_) | ConstantValue::ConstReference(_)))
         {
             asm.format(format_args!(
                 "imul{suffix} {operands}",
@@ -1274,8 +1264,8 @@ impl Instruction {
                 ConstantValue::Immediate(imm) => {
                     format!("${}", imm.wrapping_mul(size_of::<usize>() as i64))
                 }
-                ConstantValue::Reference(_ref) => {
-                    format!("{}", offset.x86_operand(OperandKind::Ptr)?)
+                ConstantValue::ConstReference(_ref) => {
+                    format!("{{_const_{}}}", _ref)
                 }
                 _ => return Err(syn::Error::new(self.span(), "invalid operand")),
             },
@@ -1301,8 +1291,8 @@ impl Instruction {
                 ConstantValue::Immediate(imm) => {
                     format!("${}", imm.wrapping_mul(size_of::<usize>() as i64))
                 }
-                ConstantValue::Reference(_ref) => {
-                    format!("{}", offset.x86_operand(OperandKind::Ptr)?)
+                ConstantValue::ConstReference(_ref) => {
+                    format!("{{_const_{}}}", _ref)
                 }
                 _ => return Err(syn::Error::new(self.span(), "invalid operand")),
             },
@@ -2038,7 +2028,7 @@ impl Instruction {
                     let is_unordered = LocalLabel::unique("bdeq");
                     asm.format(format_args!("jp {}", is_unordered.asm_label()?));
                     asm.format(format_args!("je {}", target.asm_label()?));
-                    is_unordered.lower(asm);
+                    is_unordered.lower(asm)?;
                 }
 
                 Ok(())
@@ -2067,9 +2057,9 @@ impl Instruction {
                     let is_equal = LocalLabel::unique("bdnequn");
                     asm.format(format_args!("jp {}", is_unordered.asm_label()?));
                     asm.format(format_args!("je {}", is_equal.asm_label()?));
-                    is_unordered.lower(asm);
+                    is_unordered.lower(asm)?;
                     asm.format(format_args!("jmp {}", target.asm_label()?));
-                    is_equal.lower(asm);
+                    is_equal.lower(asm)?;
                 }
 
                 Ok(())
@@ -2095,7 +2085,7 @@ impl Instruction {
                     let is_unordered = LocalLabel::unique("bfeq");
                     asm.format(format_args!("jp {}", is_unordered.asm_label()?));
                     asm.format(format_args!("je {}", target.asm_label()?));
-                    is_unordered.lower(asm);
+                    is_unordered.lower(asm)?;
                 }
 
                 Ok(())
@@ -2388,6 +2378,46 @@ impl Instruction {
             Self::Ret(_) => {
                 asm.puts("ret");
                 Ok(())
+            }
+
+            Self::Cieq(_) | Self::Cbeq(_) | Self::Cpeq(_) | Self::Cqeq(_) => {
+                self.handle_x86_set_icmp("sete", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cineq(_) | Self::Cbneq(_) | Self::Cpneq(_) | Self::Cqneq(_) => {
+                self.handle_x86_set_icmp("setne", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cia(_) | Self::Cba(_) | Self::Cpa(_) | Self::Cqa(_) => {
+                self.handle_x86_set_icmp("seta", self.x86_operand_kind(), asm)
+            }
+
+            Self::Ciaeq(_) | Self::Cbaeq(_) | Self::Cpaeq(_) | Self::Cqaeq(_) => {
+                self.handle_x86_set_icmp("setae", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cib(_) | Self::Cpb(_) | Self::Cqb(_) | Self::Cbb(_) => {
+                self.handle_x86_set_icmp("setb", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cibeq(_) | Self::Cpbeq(_) | Self::Cqbeq(_) | Self::Cbbeq(_) => {
+                self.handle_x86_set_icmp("setbe", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cigt(_) | Self::Cbgt(_) | Self::Cpgt(_) | Self::Cqgt(_) => {
+                self.handle_x86_set_icmp("setg", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cilt(_) | Self::Cplt(_) | Self::Cqlt(_) | Self::Cblt(_) => {
+                self.handle_x86_set_icmp("setl", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cigteq(_) | Self::Cbgteq(_) | Self::Cpgteq(_) | Self::Cqgteq(_) => {
+                self.handle_x86_set_icmp("setge", self.x86_operand_kind(), asm)
+            }
+
+            Self::Cilteq(_) | Self::Cblteq(_) | Self::Cplteq(_) | Self::Cqlteq(_) => {
+                self.handle_x86_set_icmp("setle", self.x86_operand_kind(), asm)
             }
 
             _ => todo!(),

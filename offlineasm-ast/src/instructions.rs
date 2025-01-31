@@ -1332,10 +1332,25 @@ macro_rules! instructions {
                     pub rhs: Operand,
                 },
 
+                /// Compare i64 not equal.
+                ///
+                /// Usage: `cqneq <dst>, <lhs>, <rhs>`
+                cqneq {
+                    pub dst: Operand,
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                },
+
                 /// Compare isize above.
                 ///
                 /// Usage: `cpa <dst>, <lhs>, <rhs>`
                 cpa {
+                    pub dst: Operand,
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                },
+
+                cqa {
                     pub dst: Operand,
                     pub lhs: Operand,
                     pub rhs: Operand,
@@ -1350,6 +1365,12 @@ macro_rules! instructions {
                     pub rhs: Operand,
                 },
 
+                cqaeq {
+                    pub dst: Operand,
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                },
+
                 /// Compare isize below.
                 ///
                 /// Usage: `cpb <dst>, <lhs>, <rhs>`
@@ -1358,6 +1379,13 @@ macro_rules! instructions {
                     pub lhs: Operand,
                     pub rhs: Operand,
                 },
+
+                cqb {
+                    pub dst: Operand,
+                    pub lhs: Operand,
+                    pub rhs: Operand,
+                },
+
                 /// Compare isize below or equal.
                 ///
                 /// Usage: `cpbeq <dst>, <lhs>, <rhs>`
@@ -2089,7 +2117,7 @@ macro_rules! define_instructions {
                                     }
                                 }
                             }
-                            
+
                         }
                     }
 
@@ -2148,7 +2176,7 @@ macro_rules! define_instructions {
                                 ),*
                             }
                         }
-                        
+
                     }
 
                     impl<F, E> TryMapOperands<F, E> for [<$ins:camel>]
@@ -2389,11 +2417,8 @@ where
     fn for_each_operand(&self, f: F);
 }
 
-pub trait TryForEachOperand
-{
+pub trait TryForEachOperand {
     fn try_for_each_operand<F, E>(&self, f: F) -> Result<(), E>
     where
         F: FnMut(&Operand) -> Result<(), E>;
 }
-
-

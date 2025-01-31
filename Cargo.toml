@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "offlineasm", "offlineasm-ast"
-]
+, "offlineasm-expand"]
 
 default-members = ["offlineasm"]
 resolver = "2"
