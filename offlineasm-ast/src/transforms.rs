@@ -214,6 +214,13 @@ impl Operand {
     pub fn fold(&self, constants: &HashMap<Ident, Operand>) -> syn::Result<Self> {
         match self {
             Self::Constant(c) => Ok(Self::Constant(c.clone())),
+            Self::Name(Name::Variable(var)) => {
+                if let Some(op) = constants.get(&var.name) {
+                    Ok(op.clone())
+                } else {
+                    Ok(self.clone())
+                }
+            }
             Self::BinaryExpression(expr) => {
                 let left = expr.lhs.fold(constants)?;
                 let right = expr.rhs.fold(constants)?;
@@ -337,6 +344,8 @@ impl Stmt {
         match self {
             Self::Sequence(seq) => Ok(Self::Sequence(Rc::new(seq.substitute(mapping)?))),
             Self::Instruction(instr) => Ok(Self::Instruction(Rc::new(instr.substitute(mapping)?))),
+            Self::Macro(m) => Ok(Self::Macro(Rc::new(m.substitute(mapping)?))),
+            Self::MacroCall(call) => Ok(Self::MacroCall(Rc::new(call.substitute(mapping)?))),
             _ => Ok(self.clone()),
         }
     }
@@ -347,9 +356,6 @@ impl Stmt {
                 let mut mapping = HashMap::new();
                 let mut my_macros = macros.clone();
                 let macro_ = macros.get(&call.name).ok_or_else(|| {
-                    for (name, macro_) in macros.iter() {
-                        println!("{} {}", macro_, name == &call.name);
-                    }
                     syn::Error::new(call.span, &format!("Macro {} not found", call.name))
                 })?;
                 if macro_.args.len() != call.arguments.len() {
@@ -380,7 +386,6 @@ impl Stmt {
                         },
 
                         MacroArgument::Macro(lambda) => {
-                            println!("lambda macro {}", lambda);
                             my_macros.insert(mvar.name.clone(), lambda.clone());
                             mapping.remove(mvar);
                         }
@@ -423,21 +428,7 @@ impl Stmt {
 
     pub fn fold(&self, constants: &HashMap<Ident, Operand>) -> syn::Result<Self> {
         match self {
-            Self::Sequence(seq) => {
-                let mut new_list = Vec::new();
-                let mut my_constants = constants.clone();
-                for item in seq.stmts.iter() {
-                    if let Stmt::ConstDecl(decl) = item {
-                        my_constants.insert(decl.name.clone(), decl.value.clone());
-                    } else {
-                        new_list.push(item.fold(&my_constants)?);
-                    }
-                }
-                Ok(Self::Sequence(Rc::new(Sequence {
-                    span: seq.span.clone(),
-                    stmts: new_list,
-                })))
-            }
+            Self::Sequence(seq) => Ok(Stmt::Sequence(Rc::new(seq.fold(constants)?))),
 
             Self::ConstDecl(decl) => {
                 let value = decl.value.fold(constants)?;
@@ -515,6 +506,167 @@ impl Sequence {
     }
 }
 
+impl Sequence {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Self> {
+        let mut new_list = Vec::new();
+        for item in self.stmts.iter() {
+            new_list.push(item.resolve_settings(settings)?);
+        }
+        Ok(Self {
+            span: self.span.clone(),
+            stmts: new_list,
+        })
+    }
+}
+
+impl Stmt {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Self> {
+        match self {
+            Self::Predicate(pred) => Ok(pred.resolve_settings(settings)?),
+            Self::Sequence(seq) => Ok(Self::Sequence(Rc::new(seq.resolve_settings(settings)?))),
+            Self::Macro(m) => Ok(Self::Macro(Rc::new(m.resolve_settings(settings)?))),
+            Self::MacroCall(call) => Ok(Self::MacroCall(Rc::new(call.resolve_settings(settings)?))),
+            _ => Ok(self.clone()),
+        }
+    }
+}
+
+impl MacroArgument {
+    pub fn substitute(&self, mapping: &HashMap<Variable, Operand>) -> syn::Result<Self> {
+        match self {
+            Self::Operand(op) => Ok(Self::Operand(op.substitute(mapping)?)),
+            Self::Macro(m) => Ok(Self::Macro(Rc::new(m.substitute(mapping)?))),
+        }
+    }
+}
+
+impl MacroCall {
+    pub fn substitute(&self, mapping: &HashMap<Variable, Operand>) -> syn::Result<Self> {
+        Ok(Self {
+            arguments: self
+                .arguments
+                .iter()
+                .map(|arg| arg.substitute(mapping))
+                .collect::<syn::Result<Vec<_>>>()?,
+            name: self.name.clone(),
+            original_name: self.original_name.clone(),
+            span: self.span.clone(),
+        })
+    }
+}
+
+impl Macro {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Self> {
+        Ok(Self {
+            args: self.args.clone(),
+            span: self.span.clone(),
+            name: self.name.clone(),
+            body: self.body.resolve_settings(settings)?,
+        })
+    }
+
+    pub fn substitute(&self, mapping: &HashMap<Variable, Operand>) -> syn::Result<Self> {
+        let mut my_mapping = HashMap::new();
+
+        for (key, value) in mapping.iter() {
+            if !self.args.contains(key) {
+                my_mapping.insert(key.clone(), value.clone());
+            } else {
+            }
+        }
+
+        Ok(Self {
+            args: self.args.clone(),
+            span: self.span.clone(),
+            name: self.name.clone(),
+            body: self.body.substitute(&my_mapping)?,
+        })
+    }
+}
+
+impl MacroArgument {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Self> {
+        match self {
+            Self::Operand(op) => Ok(Self::Operand(op.clone())),
+            Self::Macro(m) => Ok(Self::Macro(Rc::new(m.resolve_settings(settings)?))),
+        }
+    }
+}
+
+impl MacroCall {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Self> {
+        let mut new_args = Vec::new();
+        for arg in self.arguments.iter() {
+            new_args.push(arg.resolve_settings(settings)?);
+        }
+        Ok(Self {
+            arguments: new_args,
+            name: self.name.clone(),
+            original_name: self.original_name.clone(),
+            span: self.span.clone(),
+        })
+    }
+}
+
+impl Predicate {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> syn::Result<Stmt> {
+        if self.expr.resolve_settings(settings) {
+            Ok(self.then.clone())
+        } else {
+            Ok(self
+                .else_case
+                .clone()
+                .unwrap_or(Stmt::Sequence(Rc::new(Sequence {
+                    span: self.span.clone(),
+                    stmts: vec![],
+                }))))
+        }
+    }
+}
+
+impl PredicateExpr {
+    pub fn resolve_settings(&self, settings: &HashMap<Ident, bool>) -> bool {
+        match self {
+            Self::Setting(name) => settings.get(name).copied().unwrap_or(false),
+
+            Self::And(left, right) => {
+                let left = left.resolve_settings(settings);
+                let right = right.resolve_settings(settings);
+                left && right
+            }
+
+            Self::Or(left, right) => {
+                let left = left.resolve_settings(settings);
+                let right = right.resolve_settings(settings);
+                left || right
+            }
+
+            Self::Not(expr) => {
+                let expr = expr.resolve_settings(settings);
+                !expr
+            }
+        }
+    }
+}
+
+impl Sequence {
+    pub fn fold(&self, constants: &HashMap<Ident, Operand>) -> syn::Result<Self> {
+        let mut new_list = Vec::new();
+        let mut my_constants = constants.clone();
+        for item in self.stmts.iter() {
+            if let Stmt::ConstDecl(decl) = item {
+                my_constants.insert(decl.name.clone(), decl.value.clone());
+            } else {
+                new_list.push(item.fold(&my_constants)?);
+            }
+        }
+        Ok(Self {
+            span: self.span.clone(),
+            stmts: new_list,
+        })
+    }
+}
+
 pub fn prepass(toplevel: &Toplevel) -> syn::Result<Sequence> {
     let seq = Sequence {
         stmts: toplevel.stmts.clone(),
@@ -522,6 +674,8 @@ pub fn prepass(toplevel: &Toplevel) -> syn::Result<Sequence> {
     };
 
     Ok(seq
+        .resolve_settings(&toplevel.resolved_settings)?
         .demacroify(&HashMap::new())?
-        .rename_labels(&HashMap::new())?)
+        .rename_labels(&HashMap::new())?
+        .fold(&HashMap::new())?)
 }

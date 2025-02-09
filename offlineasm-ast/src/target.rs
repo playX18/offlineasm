@@ -4,12 +4,12 @@ use crate::{
     stmt::{Label, LabelMapping, LocalLabel, Sequence, Stmt},
 };
 use proc_macro2::{Span, TokenStream};
-use syn::Ident;
 use std::{
     cell::{LazyCell, RefCell},
     collections::HashMap,
     rc::Rc,
 };
+use syn::Ident;
 
 pub mod x86;
 pub mod x86_proc;
@@ -55,11 +55,12 @@ impl Assembler {
     pub fn format(&mut self, arguments: std::fmt::Arguments<'_>) {
         use std::fmt::Write;
         self.assembler_output.write_fmt(arguments).unwrap();
+        self.assembler_output.push('\n');
     }
 
     pub fn local_label(&mut self, label: &LocalLabel) {
         self.format(format_args!(
-            "{label}:\n",
+            "{label}:",
             label = local_label_string(&label.name.to_string())
         ));
     }
@@ -76,15 +77,23 @@ impl Assembler {
         } else {
             self.puts(".text");
         }
-        self.puts(alignment);
-        self.puts(&alt_entry(label));
+        if !alignment.is_empty() {
+            self.puts(alignment);
+        }
+        let alt_entry = alt_entry(label);
+        if !alt_entry.is_empty() {
+            self.puts(&alt_entry);
+        }
         self.format(format_args!(
-            ".globl {label}\n",
+            ".globl {label}",
             label = global_reference(&label.name.to_string())
         ));
-        self.puts(&visibility(label));
+        let vis = visibility(label);
+        if !vis.is_empty() {
+            self.puts(&vis);
+        }
         self.format(format_args!(
-            "{label}:\n",
+            "{label}:",
             label = global_reference(&label.name.to_string())
         ));
     }
@@ -106,7 +115,7 @@ impl Assembler {
 
         let asm = &self.assembler_output;
 
-        let mut constants = Vec::new();//TokenStream::new();
+        let mut constants = Vec::new(); //TokenStream::new();
 
         for (i, constant) in self.constants.iter().enumerate() {
             let id = Ident::new(&format!("_const_{}", i), Span::call_site());
@@ -125,7 +134,7 @@ impl Assembler {
         output.extend(quote::quote! {
             ::core::arch::global_asm! {
                 #asm,
-                #(#constants),*
+                #(#constants,)*
                 options(att_syntax)
             }
         });
@@ -348,8 +357,7 @@ impl Stmt {
             Stmt::Sequence(seq) => seq.lower(asm),
             Stmt::Label(label) => label.lower(asm),
             Stmt::LocalLabel(label) => label.lower(asm),
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 }
-

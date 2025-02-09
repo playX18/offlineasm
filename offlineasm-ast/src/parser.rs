@@ -267,9 +267,9 @@ impl Parse for PredicateExpr {
     }
 }
 
-mod kw {
+pub mod kw {
     syn::custom_keyword!(abs);
-    syn::custom_keyword!(setting);
+    syn::custom_keyword!(settings);
 }
 
 impl Parse for Address {
@@ -535,6 +535,13 @@ impl Parse for MacroCall {
 
 impl Parse for Stmt {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(kw::settings) {
+            return Err(syn::Error::new(
+                input.span(),
+                "settings can only be declared at the top level",
+            ));
+        }
+
         if input.peek(syn::Token![macro]) {
             return Macro::parse(input).map(Rc::new).map(Stmt::Macro);
         } else if input.peek(syn::Token![const]) {
@@ -560,7 +567,7 @@ impl Parse for Stmt {
             let name = input.parse::<syn::Ident>()?;
 
             let _ = input.parse::<syn::Token![:]>()?;
-            return Label::for_name(&name, false).map(Stmt::Label);
+            return Label::for_name(&name, true).map(Stmt::Label);
         } else if input.peek(syn::Ident) && input.peek2(syn::Token![:]) {
             let name = input.parse::<syn::Ident>()?;
             let _ = input.parse::<syn::Token![:]>()?;
@@ -591,18 +598,32 @@ impl Parse for Toplevel {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut stmts = Vec::new();
         let mut settings = HashMap::new();
-        while !input.is_empty() {
-            if input.peek(kw::setting) {
-                let _ = input.parse::<kw::setting>()?;
-                let name = input.parse::<syn::Ident>()?;
-                let _ = input.parse::<syn::Token![=]>()?;
-                let value = input.parse::<syn::LitBool>()?;
-                settings.insert(name, value.value());
-            } else {
-                stmts.push(Stmt::parse(input)?);
+        let mut resolved_settings = HashMap::new();
+
+        if input.peek(kw::settings) {
+            let _ = input.parse::<kw::settings>()?;
+            let content;
+            let _ = syn::braced!(content in input);
+            while !content.is_empty() {
+                let name = content.parse::<syn::Ident>()?;
+                let _ = content.parse::<syn::Token![=]>()?;
+                if content.peek(syn::LitBool) {
+                    let value = content.parse::<syn::LitBool>()?;
+                    resolved_settings.insert(name, value.value());
+                } else {
+                    let value = content.parse::<syn::Meta>()?;
+                    settings.insert(name, value);
+                }
             }
         }
-        Ok(Self { stmts, settings })
+        while !input.is_empty() {
+            stmts.push(Stmt::parse(input)?);
+        }
+        Ok(Self {
+            stmts,
+            settings,
+            resolved_settings,
+        })
     }
 }
 
@@ -611,6 +632,7 @@ pub fn peek_not_operand(input: ParseStream) -> bool {
         || input.peek(syn::Token![->])
         || (input.peek(syn::Ident) && input.peek2(syn::Token![:]))
         || input.peek(syn::Token![macro])
+        || input.peek(syn::Token![move])
         || input.peek(syn::Token![if])
         || (input.peek(syn::Token![const])
             && input.peek2(syn::Ident)

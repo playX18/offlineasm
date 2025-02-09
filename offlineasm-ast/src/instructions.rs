@@ -2081,7 +2081,7 @@ macro_rules! define_instructions {
                                         let _ = input.parse::<syn::Token![,]>()?;
                                         let lhs = input.parse::<Operand>()?;
 
-                                        if $crate::parser::peek_not_operand(input) {
+                                        if !input.peek(syn::Token![,]) && $crate::parser::peek_not_operand(input) {
                                             return Ok(Self {
                                                 span,
                                                 dst: dst.clone(),
@@ -2089,6 +2089,7 @@ macro_rules! define_instructions {
                                                 rhs: lhs
                                             })
                                         } else {
+                                            let _ = input.parse::<syn::Token![,]>()?;
                                             let rhs = input.parse::<Operand>()?;
                                             Ok(Self {
                                                 span,

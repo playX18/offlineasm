@@ -72,9 +72,9 @@ fn x86_gpr_name(name: &str, kind: OperandKind) -> syn::Result<String> {
     match kind {
         OperandKind::Byte => Ok(register(name8)),
         OperandKind::Half => Ok(register(name16)),
-        OperandKind::Int => Ok(register(format!("e{name}"))),
-        OperandKind::Quad => Ok(register(format!("r{name}"))),
-        OperandKind::Ptr => Ok(register(format!("r{name}"))),
+        OperandKind::Int => Ok(register(format!("e{name16}"))),
+        OperandKind::Quad => Ok(register(format!("r{name16}"))),
+        OperandKind::Ptr => Ok(register(format!("r{name16}"))),
         _ => unreachable!(),
     }
 }
@@ -246,7 +246,7 @@ impl Constant {
             ConstantValue::Immediate(imm) => Ok(format!("${imm}")),
             ConstantValue::ConstReference(x) => Ok(format!("${{_const_{x}}}")),
             ConstantValue::SymReference(x) => Ok(format!("${{_sym_{x}}}")),
-            _ => todo!(),
+            _ => todo!("constexpr {}", self),
         }
     }
 }
@@ -321,10 +321,7 @@ impl LabelReference {
     }
 
     pub fn x86_call_operand(&self) -> syn::Result<String> {
-        Ok(format!(
-            "{CALL_PREFIX}{}",
-            self.x86_operand(OperandKind::Ptr)?
-        ))
+        Ok(format!("{}", self.x86_operand(OperandKind::Ptr)?))
     }
 
     pub fn x86_load_operand(
@@ -336,13 +333,13 @@ impl LabelReference {
         let _ = kind;
         if !is_windows() {
             asm.format(format_args!(
-                "movq {}@GOTPCREL(%rip), {}\n",
+                "movq {}@GOTPCREL(%rip), {}",
                 self.x86_operand(OperandKind::Ptr)?,
                 dst.x86_operand(OperandKind::Ptr)?
             ));
         } else {
             asm.format(format_args!(
-                "lea {}@GOTPCREL(%rip), {}\n",
+                "lea {}@GOTPCREL(%rip), {}",
                 self.x86_operand(OperandKind::Ptr)?,
                 dst.x86_operand(OperandKind::Ptr)?
             ));
@@ -370,6 +367,7 @@ impl Operand {
         match self {
             Operand::LabelReference(lref) => lref.x86_call_operand(),
             Operand::Address(addr) => addr.x86_call_operand(),
+            Operand::Constant(c) => c.x86_operand(),
             _ => Err(syn::Error::new(
                 self.span(),
                 &format!("invalid operand kind for call operand: {}", self),
@@ -391,7 +389,8 @@ impl Operand {
             Operand::Constant(c) => c.x86_operand(),
             Operand::GPRegister(r) => r.x86_operand(kind),
             Operand::FPRegister(r) => r.x86_operand(kind),
-            _ => todo!(),
+
+            _ => todo!("x86 {}", self),
         }
     }
 
@@ -495,20 +494,20 @@ impl Instruction {
         if let Operand::LabelReference(lref) = src {
             if !is_windows() {
                 asm.format(format_args!(
-                    "movq {}@GOTPCREL(%rip), {}\n",
+                    "movq {}@GOTPCREL(%rip), {}",
                     lref.x86_operand(OperandKind::Ptr)?,
                     dst.x86_operand(OperandKind::Ptr)?
                 ));
             } else {
                 asm.format(format_args!(
-                    "lea {}@GOTPCREL(%rip), {}\n",
+                    "lea {}@GOTPCREL(%rip), {}",
                     lref.x86_operand(OperandKind::Ptr)?,
                     dst.x86_operand(OperandKind::Ptr)?
                 ));
             }
         } else {
             asm.format(format_args!(
-                "lea {}, {}\n",
+                "lea {}, {}",
                 src.x86_address_operand(kind)?,
                 dst.x86_operand(kind)?
             ));
@@ -530,28 +529,28 @@ impl Instruction {
             let rhs = ops[2];
             if dst == lhs {
                 asm.format(format_args!(
-                    "{} {}, {}\n",
+                    "{} {}, {}",
                     opcode,
                     rhs.x86_operand(kind)?,
                     dst.x86_operand(kind)?,
                 ));
             } else if lhs == rhs {
                 asm.format(format_args!(
-                    "{} {}, {}\n",
+                    "{} {}, {}",
                     opcode,
                     lhs.x86_operand(kind)?,
                     dst.x86_operand(kind)?,
                 ));
             } else {
                 asm.format(format_args!(
-                    "mov{suffix} {lhs}, {dst}\n",
+                    "mov{suffix} {lhs}, {dst}",
                     suffix = Self::x86_suffix(kind),
                     lhs = lhs.x86_operand(kind)?,
                     dst = dst.x86_operand(kind)?,
                 ));
 
                 asm.format(format_args!(
-                    "{opcode} {rhs}, {dst}\n",
+                    "{opcode} {rhs}, {dst}",
                     opcode = opcode,
                     rhs = rhs.x86_operand(kind)?,
                     dst = dst.x86_operand(kind)?,
@@ -569,7 +568,7 @@ impl Instruction {
             let src = ops[1];
 
             asm.format(format_args!(
-                "{opcode} {src}, {dst}\n",
+                "{opcode} {src}, {dst}",
                 opcode = opcode,
                 src = src.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
@@ -605,7 +604,7 @@ impl Instruction {
                 ) =>
             {
                 asm.format(format_args!(
-                    "{opcode} {src}, {dst}\n",
+                    "{opcode} {src}, {dst}",
                     opcode = opcode,
                     src = ops[0].x86_operand(OperandKind::Byte)?,
                     dst = ops[1].x86_operand(kind)?,
@@ -615,7 +614,7 @@ impl Instruction {
             }
             Operand::GPRegister(r) if r.x86_gpr()? == "ecx" => {
                 asm.format(format_args!(
-                    "{opcode} {src}, {dst}\n",
+                    "{opcode} {src}, {dst}",
                     opcode = opcode,
                     src = ops[0].x86_operand(OperandKind::Byte)?,
                     dst = r.x86_operand(kind)?,
@@ -626,18 +625,18 @@ impl Instruction {
 
             _ => {
                 asm.format(format_args!(
-                    "xchgq {dst}, %rcx\n",
+                    "xchgq {dst}, %rcx",
                     dst = ops[0].x86_operand(kind)?,
                 ));
 
                 asm.format(format_args!(
-                    "{opcode} %cl, {dst}\n",
+                    "{opcode} %cl, {dst}",
                     opcode = opcode,
                     dst = ops[0].x86_operand(kind)?,
                 ));
 
                 asm.format(format_args!(
-                    "xchgq %rcx, {dst}\n",
+                    "xchgq %rcx, {dst}",
                     dst = ops[0].x86_operand(kind)?,
                 ));
 
@@ -655,14 +654,14 @@ impl Instruction {
     ) -> syn::Result<()> {
         if reverse {
             asm.format(format_args!(
-                "ucomi{suffix} {rhs}, {lhs}\n",
+                "ucomi{suffix} {rhs}, {lhs}",
                 suffix = Self::x86_suffix(kind),
                 lhs = self.operands()[0].x86_operand(OperandKind::Double)?,
                 rhs = self.operands()[1].x86_operand(OperandKind::Double)?,
             ));
         } else {
             asm.format(format_args!(
-                "ucomi{suffix} {lhs}, {rhs}\n",
+                "ucomi{suffix} {lhs}, {rhs}",
                 suffix = Self::x86_suffix(kind),
                 lhs = self.operands()[0].x86_operand(OperandKind::Double)?,
                 rhs = self.operands()[1].x86_operand(OperandKind::Double)?,
@@ -670,7 +669,7 @@ impl Instruction {
         }
 
         asm.format(format_args!(
-            "{branch_opcode} {label}\n",
+            "{branch_opcode} {label}",
             branch_opcode = branch_opcode,
             label = self.operands()[2].asm_label()?,
         ));
@@ -695,7 +694,7 @@ impl Instruction {
                     && matches!(opcode_suffix, "e" | "ne") =>
             {
                 asm.format(format_args!(
-                    "test{suffix} {rhs}, {rhs}\n",
+                    "test{suffix} {rhs}, {rhs}",
                     suffix = Self::x86_suffix(kind),
                     rhs = rhs.x86_operand(kind)?,
                 ));
@@ -706,7 +705,7 @@ impl Instruction {
                     && matches!(opcode_suffix, "e" | "ne") =>
             {
                 asm.format(format_args!(
-                    "test{suffix} {lhs}, {lhs}\n",
+                    "test{suffix} {lhs}, {lhs}",
                     suffix = Self::x86_suffix(kind),
                     lhs = lhs.x86_operand(kind)?,
                 ));
@@ -714,7 +713,7 @@ impl Instruction {
 
             _ => {
                 asm.format(format_args!(
-                    "cmp{suffix} {rhs}, {lhs}\n",
+                    "cmp{suffix} {rhs}, {lhs}",
                     suffix = Self::x86_suffix(kind),
                     lhs = lhs.x86_operand(kind)?,
                     rhs = rhs.x86_operand(kind)?,
@@ -733,7 +732,7 @@ impl Instruction {
     ) -> syn::Result<()> {
         self.handle_x86_icmp(0, &opcode[opcode.len() - 1..], kind, asm)?;
         asm.format(format_args!(
-            "{opcode} {label}\n",
+            "{opcode} {label}",
             opcode = opcode,
             label = self.operands()[2].asm_label()?,
         ));
@@ -748,26 +747,26 @@ impl Instruction {
     ) -> syn::Result<()> {
         if operand.supports_8bit_on_x86()? {
             asm.format(format_args!(
-                "{set_opcode} {operand}\n",
+                "{set_opcode} {operand}",
                 set_opcode = set_opcode,
                 operand = operand.x86_operand(OperandKind::Byte)?,
             ));
             asm.format(format_args!(
-                "movzbl {src}, {dst}\n",
+                "movzbl {src}, {dst}",
                 src = operand.x86_operand(OperandKind::Byte)?,
                 dst = operand.x86_operand(OperandKind::Int)?,
             ));
         } else {
             asm.format(format_args!(
-                "xchgq {operand}, %rax\n",
+                "xchgq {operand}, %rax",
                 operand = operand.x86_operand(OperandKind::Int)?,
             ));
-            asm.format(format_args!("{set_opcode} %al\n", set_opcode = set_opcode,));
+            asm.format(format_args!("{set_opcode} %al", set_opcode = set_opcode,));
 
-            asm.format(format_args!("movzbl %al, %rax\n",));
+            asm.format(format_args!("movzbl %al, %rax",));
 
             asm.format(format_args!(
-                "xchgq %rax, {operand}\n",
+                "xchgq %rax, {operand}",
                 operand = operand.x86_operand(OperandKind::Ptr)?,
             ));
         }
@@ -787,6 +786,7 @@ impl Instruction {
 
     pub fn handle_x86_fp_compare_set(
         &self,
+        kind: OperandKind,
         set_opcode: &str,
         reverse: bool,
         asm: &mut Assembler,
@@ -800,10 +800,10 @@ impl Instruction {
 
         let compare = |lhs: &Operand, rhs: &Operand, asm: &mut Assembler| -> syn::Result<()> {
             asm.format(format_args!(
-                "ucomi{suffix} {lhs}, {rhs}\n",
-                suffix = Self::x86_suffix(OperandKind::Double),
-                lhs = lhs.x86_operand(OperandKind::Double)?,
-                rhs = rhs.x86_operand(OperandKind::Double)?,
+                "ucomi{suffix} {lhs}, {rhs}",
+                suffix = Self::x86_suffix(kind),
+                lhs = lhs.x86_operand(kind)?,
+                rhs = rhs.x86_operand(kind)?,
             ));
 
             Ok(())
@@ -820,12 +820,12 @@ impl Instruction {
 
                     let is_unordered = LocalLabel::unique("isUnordred");
                     asm.format(format_args!(
-                        "movq $0, {target}\n",
+                        "movq $0, {target}",
                         target = target.x86_operand(OperandKind::Quad)?,
                     ));
                     compare(right, left, asm)?;
                     asm.format(format_args!(
-                        "jp {label}\n",
+                        "jp {label}",
                         label = Assembler::local_label_reference(&is_unordered)
                     ));
                     self.handle_x86_set("sete", target, asm)?;
@@ -842,12 +842,12 @@ impl Instruction {
 
                     let is_unordered = LocalLabel::unique("isUnordred");
                     asm.format(format_args!(
-                        "movq $1, {target}\n",
+                        "movq $1, {target}",
                         target = target.x86_operand(OperandKind::Quad)?,
                     ));
                     compare(right, left, asm)?;
                     asm.format(format_args!(
-                        "jp {label}\n",
+                        "jp {label}",
                         label = Assembler::local_label_reference(&is_unordered)
                     ));
                     self.handle_x86_set("setne", target, asm)?;
@@ -882,13 +882,13 @@ impl Instruction {
             Operand::Constant(c) if c.value == ConstantValue::Immediate((-1i64) as i64) => {
                 if matches!(value, Operand::GPRegister(_)) {
                     asm.format(format_args!(
-                        "test{suffix} {value}, {value}\n",
+                        "test{suffix} {value}, {value}",
                         suffix = Self::x86_suffix(kind),
                         value = value.x86_operand(kind)?,
                     ));
                 } else {
                     asm.format(format_args!(
-                        "cmp{suffix} $0, {value}\n",
+                        "cmp{suffix} $0, {value}",
                         suffix = Self::x86_suffix(kind),
                         value = value.x86_operand(kind)?,
                     ));
@@ -897,7 +897,7 @@ impl Instruction {
 
             _ => {
                 asm.format(format_args!(
-                    "test{suffix} {mask}, {value}\n",
+                    "test{suffix} {mask}, {value}",
                     suffix = Self::x86_suffix(kind),
                     mask = mask.x86_operand(kind)?,
                     value = value.x86_operand(kind)?,
@@ -916,7 +916,7 @@ impl Instruction {
     ) -> syn::Result<()> {
         self.handle_x86_test(0, kind, asm)?;
         asm.format(format_args!(
-            "{branch_opcode} {label}\n",
+            "{branch_opcode} {label}",
             branch_opcode = branch_opcode,
             label = self.operands()[2].asm_label()?,
         ));
@@ -945,7 +945,7 @@ impl Instruction {
         let jump_target = operands.last().unwrap();
 
         asm.format(format_args!(
-            "{branch_opcode} {label}\n",
+            "{branch_opcode} {label}",
             branch_opcode = branch_opcode,
             label = jump_target.asm_label()?,
         ));
@@ -967,13 +967,13 @@ impl Instruction {
 
         if dst == lhs {
             asm.format(format_args!(
-                "neg{suffix} {dst}\n",
+                "neg{suffix} {dst}",
                 suffix = Self::x86_suffix(kind),
                 dst = dst.x86_operand(kind)?,
             ));
 
             asm.format(format_args!(
-                "add{suffix} {rhs}, {dst}\n",
+                "add{suffix} {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 rhs = rhs.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
@@ -988,7 +988,7 @@ impl Instruction {
         }
 
         asm.format(format_args!(
-            "{branch_opcode} {label}\n",
+            "{branch_opcode} {label}",
             branch_opcode = branch_opcode,
             label = target.asm_label()?,
         ));
@@ -1010,7 +1010,7 @@ impl Instruction {
 
                 _ => {
                     asm.format(format_args!(
-                        "add{suffix} {rhs}, {lhs}\n",
+                        "add{suffix} {rhs}, {lhs}",
                         suffix = Self::x86_suffix(kind),
                         rhs = rhs.x86_operand(kind)?,
                         lhs = lhs.x86_operand(kind)?
@@ -1029,7 +1029,7 @@ impl Instruction {
             if matches!(rhs, Operand::Constant(c) if c.value == ConstantValue::Immediate(0)) {
                 if lhs != dst {
                     asm.format(format_args!(
-                        "mov{suffix} {lhs}, {dst}\n",
+                        "mov{suffix} {lhs}, {dst}",
                         suffix = Self::x86_suffix(kind),
                         lhs = lhs.x86_operand(kind)?,
                         dst = dst.x86_operand(kind)?
@@ -1055,7 +1055,7 @@ impl Instruction {
 
             if lhs == dst {
                 asm.format(format_args!(
-                    "add{suffix} {rhs}, {dst}\n",
+                    "add{suffix} {rhs}, {dst}",
                     suffix = Self::x86_suffix(kind),
                     rhs = rhs.x86_operand(kind)?,
                     dst = dst.x86_operand(kind)?,
@@ -1096,7 +1096,7 @@ impl Instruction {
 
             if dst != lhs {
                 asm.format(format_args!(
-                    "mov{suffix} {lhs}, {dst}\n",
+                    "mov{suffix} {lhs}, {dst}",
                     suffix = Self::x86_suffix(kind),
                     lhs = lhs.x86_operand(kind)?,
                     dst = dst.x86_operand(kind)?,
@@ -1104,28 +1104,29 @@ impl Instruction {
             }
 
             return Ok(());
-        } else if lhs == dst {
+        } else if rhs == dst {
             asm.format(format_args!(
-                "neg{suffix} {dst}\n",
+                "neg{suffix} {dst}",
                 suffix = Self::x86_suffix(kind),
                 dst = dst.x86_operand(kind)?,
             ));
 
             if !matches!(rhs, Operand::Constant(c) if c.value == ConstantValue::Immediate(0)) {
                 asm.format(format_args!(
-                    "add{suffix} {rhs}, {dst}\n",
+                    "add{suffix} {lhs}, {dst}",
                     suffix = Self::x86_suffix(kind),
-                    rhs = rhs.x86_operand(kind)?,
+                    lhs = lhs.x86_operand(kind)?,
                     dst = dst.x86_operand(kind)?,
                 ));
             }
         } else {
-            self.handle_x86_op(
-                &format!("sub{suffix}", suffix = Self::x86_suffix(kind)),
-                kind,
-                asm,
-            )?;
         }
+
+        self.handle_x86_op(
+            &format!("sub{suffix}", suffix = Self::x86_suffix(kind)),
+            kind,
+            asm,
+        )?;
 
         Ok(())
     }
@@ -1159,14 +1160,14 @@ impl Instruction {
 
         if lhs == dst {
             asm.format(format_args!(
-                "add{suffix} {rhs}, {dst}\n",
+                "add{suffix} {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 rhs = rhs.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
             ));
         } else {
             asm.format(format_args!(
-                "vadd{suffix} {lhs}, {rhs}, {dst}\n",
+                "vadd{suffix} {lhs}, {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 lhs = lhs.x86_operand(kind)?,
                 rhs = rhs.x86_operand(kind)?,
@@ -1185,14 +1186,14 @@ impl Instruction {
 
         if lhs == dst {
             asm.format(format_args!(
-                "sub{suffix} {rhs}, {dst}\n",
+                "sub{suffix} {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 rhs = rhs.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
             ));
         } else {
             asm.format(format_args!(
-                "vsub{suffix} {lhs}, {rhs}, {dst}\n",
+                "vsub{suffix} {lhs}, {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 lhs = lhs.x86_operand(kind)?,
                 rhs = rhs.x86_operand(kind)?,
@@ -1211,14 +1212,14 @@ impl Instruction {
 
         if lhs == dst {
             asm.format(format_args!(
-                "mul{suffix} {rhs}, {dst}\n",
+                "mul{suffix} {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 rhs = rhs.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
             ));
         } else {
             asm.format(format_args!(
-                "vmul{suffix} {lhs}, {rhs}, {dst}\n",
+                "vmul{suffix} {lhs}, {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 lhs = lhs.x86_operand(kind)?,
                 rhs = rhs.x86_operand(kind)?,
@@ -1237,14 +1238,14 @@ impl Instruction {
 
         if lhs == dst {
             asm.format(format_args!(
-                "div{suffix} {rhs}, {dst}\n",
+                "div{suffix} {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 rhs = rhs.x86_operand(kind)?,
                 dst = dst.x86_operand(kind)?,
             ));
         } else {
             asm.format(format_args!(
-                "vdiv{suffix} {lhs}, {rhs}, {dst}\n",
+                "vdiv{suffix} {lhs}, {rhs}, {dst}",
                 suffix = Self::x86_suffix(kind),
                 lhs = lhs.x86_operand(kind)?,
                 rhs = rhs.x86_operand(kind)?,
@@ -1274,7 +1275,7 @@ impl Instruction {
         };
 
         asm.format(format_args!(
-            "movq {offset}(%rsp), {dst}\n",
+            "movq {offset}(%rsp), {dst}",
             offset = offset,
             dst = dst.x86_operand(OperandKind::Ptr)?,
         ));
@@ -1300,7 +1301,7 @@ impl Instruction {
         };
 
         asm.format(format_args!(
-            "movq {src}, {offset}(%rsp)\n",
+            "movq {src}, {offset}(%rsp)",
             src = src.x86_operand(OperandKind::Ptr)?,
             offset = offset,
         ));
@@ -1316,14 +1317,14 @@ impl Instruction {
         if let Operand::Constant(c) = &src {
             if let ConstantValue::Immediate(0) = c.value {
                 asm.format(format_args!(
-                    "xchgq {dst}, {dst}\n",
+                    "xorq {dst}, {dst}",
                     dst = dst.x86_operand(OperandKind::Ptr)?,
                 ));
                 return Ok(());
             }
         }
         asm.format(format_args!(
-            "movq {src}, {dst}\n",
+            "movq {src}, {dst}",
             src = src.x86_operand(OperandKind::Ptr)?,
             dst = dst.x86_operand(OperandKind::Ptr)?,
         ));
@@ -1344,7 +1345,7 @@ impl Instruction {
         });
 
         asm.format(format_args!(
-            "bsr{suffix} {src}, {target}\n",
+            "bsr{suffix} {src}, {target}",
             suffix = Self::x86_suffix(kind),
             src = operands[1].x86_operand(kind)?,
             target = operands[0].x86_operand(kind)?
@@ -1386,7 +1387,7 @@ impl Instruction {
         let zero_value = Constant::from(8 * Self::x86_bytes(kind) as i64);
 
         asm.format(format_args!(
-            "bsf{suffix} {src}, {target}\n",
+            "bsf{suffix} {src}, {target}",
             suffix = Self::x86_suffix(kind),
             src = operands[1].x86_operand(kind)?,
             target = operands[0].x86_operand(kind)?
@@ -2420,7 +2421,68 @@ impl Instruction {
                 self.handle_x86_set_icmp("setle", self.x86_operand_kind(), asm)
             }
 
-            _ => todo!(),
+            Self::Cfneq(_) | Self::Cdneq(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setne", false, asm)
+            }
+
+            Self::Cfgt(_) | Self::Cdgt(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "seta", false, asm)
+            }
+
+            Self::Cfgteq(_) | Self::Cdgteq(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", false, asm)
+            }
+            Self::Cflt(_) | Self::Cdlt(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", true, asm)
+            }
+
+            Self::Cflteq(_) | Self::Cdlteq(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", true, asm)
+            }
+
+            Self::Tis(_) | Self::Tps(_) | Self::Tqs(_) | Self::Tbs(_) => {
+                self.handle_x86_set_test("sets", self.x86_operand_kind(), asm)
+            }
+
+            Self::Tiz(_) | Self::Tpz(_) | Self::Tqz(_) | Self::Tbz(_) => {
+                self.handle_x86_set_test("setz", self.x86_operand_kind(), asm)
+            }
+
+            Self::Tinz(_) | Self::Tpnz(_) | Self::Tqnz(_) | Self::Tbnz(_) => {
+                self.handle_x86_set_test("setnz", self.x86_operand_kind(), asm)
+            }
+
+            Self::Peek(_) => self.handle_x86_peek(asm),
+            Self::Poke(_) => self.handle_x86_poke(asm),
+
+            Self::Tzcnti(_) | Self::Tzcntq(_) => {
+                self.count_trailing_zeros(self.x86_operand_kind(), asm)
+            }
+            Self::Lzcnti(_) | Self::Lzcntq(_) => {
+                self.count_leading_zeros(self.x86_operand_kind(), asm)
+            }
+
+            Self::Bo(Bo { target, .. }) => {
+                asm.format(format_args!("jo {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Bs(Bs { target, .. }) => {
+                asm.format(format_args!("js {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Bz(Bz { target, .. }) => {
+                asm.format(format_args!("jz {}", target.asm_label()?));
+                Ok(())
+            }
+
+            Self::Bnz(Bnz { target, .. }) => {
+                asm.format(format_args!("jnz {}", target.asm_label()?));
+                Ok(())
+            }
+
+            _ => todo!("{}", self),
         }
     }
 }

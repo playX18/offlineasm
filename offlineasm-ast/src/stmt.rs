@@ -8,7 +8,8 @@ use std::{
 };
 
 use proc_macro2::Span;
-use syn::Ident;
+use quote::ToTokens;
+use syn::{Ident, Meta};
 
 use crate::{
     instructions::Instruction,
@@ -132,6 +133,14 @@ impl LabelMappings {
     }
     pub fn intern_global(&self, name: &Ident, defined_in_macro: bool) -> LabelMapping {
         if let Some(mapping) = self.mappings.borrow().get(&name) {
+            match mapping {
+                LabelMapping::Global(label) => {
+                    if defined_in_macro {
+                        label.defined_in_macro.set(true);
+                    }
+                }
+                _ => ()
+            }
             return mapping.clone();
         }
         let label = Rc::new(Label {
@@ -321,6 +330,25 @@ impl Display for Predicate {
 }
 
 #[derive(Clone)]
+pub struct Setting {
+    pub name: Ident,
+    pub value: Meta,
+}
+
+impl Display for Setting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "setting {} = {}",
+            self.name,
+            self.value.to_token_stream()
+        )?;
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 pub enum Stmt {
     Sequence(Rc<Sequence>),
     Label(Rc<Label>),
@@ -330,6 +358,7 @@ pub enum Stmt {
     ConstDecl(Rc<ConstDecl>),
     Instruction(Rc<Instruction>),
     Predicate(Rc<Predicate>),
+    Setting(Rc<Setting>),
 }
 
 impl From<Rc<LocalLabel>> for Stmt {
@@ -363,6 +392,7 @@ impl Display for Stmt {
             Stmt::Predicate(predicate) => {
                 write!(f, "{}", predicate)
             }
+            Stmt::Setting(s) => write!(f, "{}", s),
         }
     }
 }
@@ -388,7 +418,8 @@ impl Display for PredicateExpr {
 
 pub struct Toplevel {
     pub stmts: Vec<Stmt>,
-    pub settings: HashMap<Ident, bool>,
+    pub settings: HashMap<Ident, Meta>,
+    pub resolved_settings: HashMap<Ident, bool>,
 }
 
 impl Display for Toplevel {
