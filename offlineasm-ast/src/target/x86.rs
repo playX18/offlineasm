@@ -2489,10 +2489,13 @@ impl Instruction {
             Self::Cfgteq(_) | Self::Cdgteq(_) => {
                 self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", false, asm)
             }
-            Self::Cflt(_) | Self::Cdlt(_) => {
-                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "seta
-                ", true, asm)
-            }
+            Self::Cflt(_) | Self::Cdlt(_) => self.handle_x86_fp_compare_set(
+                self.x86_operand_kind(),
+                "seta
+                ",
+                true,
+                asm,
+            ),
 
             Self::Cflteq(_) | Self::Cdlteq(_) => {
                 self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", true, asm)
@@ -2618,8 +2621,19 @@ impl Instruction {
                 ))
             }
 
-            Self::Emit(_emit) => {
-                todo!()
+            Self::Emit(emit) => {
+                match &emit.raw {
+                    Operand::Constant(val) => match &val.value {
+                        ConstantValue::String(s) => {
+                            asm.puts(&s);
+                        }
+                        _ => (),
+                    },
+
+                    _ => (),
+                }
+
+                Ok(())
             }
 
             Self::Memfence(_) => {
@@ -2632,9 +2646,7 @@ impl Instruction {
                 // movd %r11, ${absf.dst}
                 // andnps ${absf.src}, ${absf.dst}
 
-                asm.format(format_args!(
-                    "movl $0x80000000, %r11d",
-                ));
+                asm.format(format_args!("movl $0x80000000, %r11d",));
                 asm.format(format_args!(
                     "movd %r11d, {dst}",
                     dst = absf.dst.x86_operand(OperandKind::Float)?
@@ -2649,9 +2661,7 @@ impl Instruction {
             }
 
             Self::Absd(absd) => {
-                asm.format(format_args!(
-                    "movl $0x8000000000000000, %r11d",
-                ));
+                asm.format(format_args!("movl $0x8000000000000000, %r11d",));
                 asm.format(format_args!(
                     "movd %r11d, {dst}",
                     dst = absd.dst.x86_operand(OperandKind::Float)?
@@ -2666,9 +2676,7 @@ impl Instruction {
             }
 
             Self::Negf(negf) => {
-                asm.format(format_args!(
-                    "movl $0x80000000, %r11d",
-                ));
+                asm.format(format_args!("movl $0x80000000, %r11d",));
                 asm.format(format_args!(
                     "movd %r11d, {dst}",
                     dst = negf.dst.x86_operand(OperandKind::Float)?
@@ -2683,9 +2691,7 @@ impl Instruction {
             }
 
             Self::Negd(negd) => {
-                asm.format(format_args!(
-                    "movl $0x8000000000000000, %r11d",
-                ));
+                asm.format(format_args!("movl $0x8000000000000000, %r11d",));
                 asm.format(format_args!(
                     "movd %r11d, {dst}",
                     dst = negd.dst.x86_operand(OperandKind::Float)?
@@ -2708,39 +2714,33 @@ impl Instruction {
             }
 
             Self::Fi2f(fi2f) => {
-                asm.format(
-                    format_args!(
-                        "movd {src}, {dst}",
-                        src = fi2f.src.x86_operand(OperandKind::Int)?,
-                        dst = fi2f.dst.x86_operand(OperandKind::Float)?
-                    )
-                );
+                asm.format(format_args!(
+                    "movd {src}, {dst}",
+                    src = fi2f.src.x86_operand(OperandKind::Int)?,
+                    dst = fi2f.dst.x86_operand(OperandKind::Float)?
+                ));
 
                 Ok(())
             }
 
             Self::Ff2i(ff2i) => {
-                asm.format(
-                    format_args!(
-                        "cvttss2si {src}, {dst}",
-                        src = ff2i.src.x86_operand(OperandKind::Float)?,
-                        dst = ff2i.dst.x86_operand(OperandKind::Int)?
-                    )
-                );
+                asm.format(format_args!(
+                    "cvttss2si {src}, {dst}",
+                    src = ff2i.src.x86_operand(OperandKind::Float)?,
+                    dst = ff2i.dst.x86_operand(OperandKind::Int)?
+                ));
 
                 Ok(())
-            } 
+            }
 
             Self::TlsLoadp(ld) => {
                 let mem = if let Some(immediate) = ld.src.try_immediate() {
-                    format!(
-                        "%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _)
-                    )
+                    format!("%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _))
                 } else {
                     format!(
                         "%gs:({src}, $8)",
                         src = ld.src.x86_operand(OperandKind::Ptr)?
-                    )  
+                    )
                 };
 
                 asm.format(format_args!(
@@ -2754,14 +2754,12 @@ impl Instruction {
 
             Self::TlsStorep(st) => {
                 let mem = if let Some(immediate) = st.dst.try_immediate() {
-                    format!(
-                        "%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _)
-                    )
+                    format!("%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _))
                 } else {
                     format!(
                         "%gs:({dst}, $8)",
                         dst = st.dst.x86_operand(OperandKind::Ptr)?
-                    )  
+                    )
                 };
 
                 asm.format(format_args!(
@@ -2772,7 +2770,6 @@ impl Instruction {
 
                 Ok(())
             }
-
         }
     }
 }

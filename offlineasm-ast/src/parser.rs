@@ -18,6 +18,7 @@ impl Operand {
             || input.peek(syn::Token![const])
             || input.peek(syn::Ident)
             || input.peek(syn::LitInt)
+            || input.peek(syn::LitStr)
             || input.peek(syn::token::Paren)
     }
 
@@ -73,6 +74,13 @@ impl Operand {
             let lit = input.parse::<syn::LitInt>()?;
             let val = lit.base10_parse::<i64>()?;
             return Ok(val.into());
+        } else if input.peek(syn::LitStr) {
+            let lit = input.parse::<syn::LitStr>()?;
+            let val = lit.value();
+            return Ok(Operand::Constant(Constant {
+                span,
+                value: ConstantValue::String(val.into()),
+            }));
         } else if input.peek(syn::LitStr) {
             let lit = input.parse::<syn::LitStr>()?;
             return Ok(Constant {

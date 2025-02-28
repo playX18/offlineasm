@@ -205,6 +205,15 @@ impl From<i32> for Constant {
     }
 }
 
+impl From<String> for Constant {
+    fn from(value: String) -> Self {
+        Self {
+            span: Span::call_site(),
+            value: ConstantValue::String(Cow::Owned(value)),
+        }
+    }
+}
+
 impl From<i64> for Constant {
     fn from(value: i64) -> Self {
         Self {
