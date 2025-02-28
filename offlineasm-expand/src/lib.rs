@@ -39,8 +39,6 @@ pub fn offlineasm_inner(input: TokenStream) -> TokenStream {
         }
     }
 
-    println!("{}", asm.assembler_output);
-
     asm.compile().into()
 }
 

@@ -245,9 +245,13 @@ impl Constant {
         match &self.value {
             ConstantValue::Immediate(imm) => Ok(format!("${imm}")),
             ConstantValue::ConstReference(x) => Ok(format!("${{_const_{x}}}")),
-            ConstantValue::SymReference(x) => Ok(format!("${{_sym_{x}}}")),
+            ConstantValue::SymReference(x) => Ok(format!("{{_sym_{x}}}")),
             _ => todo!("constexpr {}", self),
         }
+    }
+
+    pub fn x86_call_operand(&self) -> syn::Result<String> {
+        Ok(format!("{}", self.x86_operand()?))
     }
 }
 
@@ -367,7 +371,7 @@ impl Operand {
         match self {
             Operand::LabelReference(lref) => lref.x86_call_operand(),
             Operand::Address(addr) => addr.x86_call_operand(),
-            Operand::Constant(c) => c.x86_operand(),
+            Operand::Constant(c) => c.x86_call_operand(),
             _ => Err(syn::Error::new(
                 self.span(),
                 &format!("invalid operand kind for call operand: {}", self),
@@ -1818,6 +1822,54 @@ impl Instruction {
                 Ok(())
             }
 
+            Self::Loadv(lv) => {
+                asm.format(format_args!(
+                    "movdqu {src}, {dst}",
+                    src = lv.addr.x86_operand(OperandKind::Int)?,
+                    dst = lv.dst.x86_operand(OperandKind::Double)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Storef(sf) => {
+                let src = sf.src.x86_operand(OperandKind::Float)?;
+                let dst = sf.addr.x86_operand(OperandKind::Float)?;
+
+                asm.format(format_args!("movss {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Stored(sd) => {
+                let src = sd.src.x86_operand(OperandKind::Double)?;
+                let dst = sd.addr.x86_operand(OperandKind::Double)?;
+
+                asm.format(format_args!("movsd {src}, {dst}",));
+
+                Ok(())
+            }
+
+            Self::Storev(sv) => {
+                asm.format(format_args!(
+                    "movdqu {src}, {dst}",
+                    src = sv.src.x86_operand(OperandKind::Double)?,
+                    dst = sv.addr.x86_operand(OperandKind::Int)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Moved(mv) => {
+                asm.format(format_args!(
+                    "movsd {src}, {dst}",
+                    src = mv.src.x86_operand(OperandKind::Double)?,
+                    dst = mv.dst.x86_operand(OperandKind::Double)?
+                ));
+
+                Ok(())
+            }
+
             Self::Addf(_) | Self::Addd(_) => self.handle_x86_add_fp(self.x86_operand_kind(), asm),
             Self::Subf(_) | Self::Subd(_) => self.handle_x86_sub_fp(self.x86_operand_kind(), asm),
             Self::Mulf(_) | Self::Muld(_) => self.handle_x86_mul_fp(self.x86_operand_kind(), asm),
@@ -2292,7 +2344,12 @@ impl Instruction {
                 Ok(())
             }
 
-            Self::Bilteq(_) | Self::Bplt(_) | Self::Bqlt(_) | Self::Bblteq(_) => {
+            Self::Bilt(_) | Self::Bplt(_) | Self::Bqlt(_) | Self::Bblt(_) => {
+                self.handle_x86_branch("jl", self.x86_operand_kind(), asm)?;
+                Ok(())
+            }
+
+            Self::Bilteq(_) | Self::Bplteq(_) | Self::Bqlteq(_) | Self::Bblteq(_) => {
                 self.handle_x86_branch("jle", self.x86_operand_kind(), asm)?;
                 Ok(())
             }
@@ -2433,7 +2490,8 @@ impl Instruction {
                 self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", false, asm)
             }
             Self::Cflt(_) | Self::Cdlt(_) => {
-                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "setae", true, asm)
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "seta
+                ", true, asm)
             }
 
             Self::Cflteq(_) | Self::Cdlteq(_) => {
@@ -2462,6 +2520,70 @@ impl Instruction {
                 self.count_leading_zeros(self.x86_operand_kind(), asm)
             }
 
+            Self::Fii2d(fii2d) => {
+                asm.format(format_args!(
+                    "movd {lsb}, {dst}",
+                    lsb = fii2d.src_lsb.x86_operand(OperandKind::Int)?,
+                    dst = fii2d.dst.x86_operand(OperandKind::Double)?
+                ));
+                asm.format(format_args!(
+                    "movsd {msb}, %xmm7",
+                    msb = fii2d.src_msb.x86_operand(OperandKind::Int)?
+                ));
+
+                asm.puts("psllq $32, %xmm7");
+
+                asm.format(format_args!(
+                    "por %xmm7, {dst}",
+                    dst = fii2d.dst.x86_operand(OperandKind::Int)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Fd2ii(fd2ii) => {
+                // movd {src}, {dst_lsb}
+                // movsd {src}, %xmm7
+                // psrlq $32, %xmm7
+                // movd %xmm7, {dst_msb}
+                asm.format(format_args!(
+                    "movd {src}, {dst_lsb}",
+                    src = fd2ii.src.x86_operand(OperandKind::Double)?,
+                    dst_lsb = fd2ii.dst_lsb.x86_operand(OperandKind::Int)?
+                ));
+                asm.format(format_args!(
+                    "movsd {src}, %xmm7",
+                    src = fd2ii.src.x86_operand(OperandKind::Double)?
+                ));
+                asm.puts("psrlq $32, %xmm7");
+                asm.format(format_args!(
+                    "movd %xmm7, {dst_msb}",
+                    dst_msb = fd2ii.dst_msb.x86_operand(OperandKind::Int)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Fq2d(fq2d) => {
+                asm.format(format_args!(
+                    "movq {src}, {dst}",
+                    src = fq2d.src.x86_operand(OperandKind::Quad)?,
+                    dst = fq2d.dst.x86_operand(OperandKind::Double)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Fd2q(fd2q) => {
+                asm.format(format_args!(
+                    "movq {src}, {dst}",
+                    src = fd2q.src.x86_operand(OperandKind::Double)?,
+                    dst = fd2q.dst.x86_operand(OperandKind::Quad)?
+                ));
+
+                Ok(())
+            }
+
             Self::Bo(Bo { target, .. }) => {
                 asm.format(format_args!("jo {}", target.asm_label()?));
                 Ok(())
@@ -2482,7 +2604,175 @@ impl Instruction {
                 Ok(())
             }
 
-            _ => todo!("{}", self),
+            Self::Load2ia(_) => {
+                return Err(syn::Error::new(
+                    self.span(),
+                    "load2ia is not implemented for x86",
+                ))
+            }
+
+            Self::Store2ia(_) => {
+                return Err(syn::Error::new(
+                    self.span(),
+                    "store2ia is not implemented for x86",
+                ))
+            }
+
+            Self::Emit(_emit) => {
+                todo!()
+            }
+
+            Self::Memfence(_) => {
+                asm.puts("lock; orl %0, %rsp");
+                Ok(())
+            }
+
+            Self::Absf(absf) => {
+                // movl $0x80000000, %r11
+                // movd %r11, ${absf.dst}
+                // andnps ${absf.src}, ${absf.dst}
+
+                asm.format(format_args!(
+                    "movl $0x80000000, %r11d",
+                ));
+                asm.format(format_args!(
+                    "movd %r11d, {dst}",
+                    dst = absf.dst.x86_operand(OperandKind::Float)?
+                ));
+                asm.format(format_args!(
+                    "andnps {src}, {dst}",
+                    src = absf.src.x86_operand(OperandKind::Float)?,
+                    dst = absf.dst.x86_operand(OperandKind::Float)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Absd(absd) => {
+                asm.format(format_args!(
+                    "movl $0x8000000000000000, %r11d",
+                ));
+                asm.format(format_args!(
+                    "movd %r11d, {dst}",
+                    dst = absd.dst.x86_operand(OperandKind::Float)?
+                ));
+                asm.format(format_args!(
+                    "andnps {src}, {dst}",
+                    src = absd.src.x86_operand(OperandKind::Float)?,
+                    dst = absd.dst.x86_operand(OperandKind::Float)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Negf(negf) => {
+                asm.format(format_args!(
+                    "movl $0x80000000, %r11d",
+                ));
+                asm.format(format_args!(
+                    "movd %r11d, {dst}",
+                    dst = negf.dst.x86_operand(OperandKind::Float)?
+                ));
+                asm.format(format_args!(
+                    "xorps {src}, {dst}",
+                    src = negf.src.x86_operand(OperandKind::Float)?,
+                    dst = negf.dst.x86_operand(OperandKind::Float)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Negd(negd) => {
+                asm.format(format_args!(
+                    "movl $0x8000000000000000, %r11d",
+                ));
+                asm.format(format_args!(
+                    "movd %r11d, {dst}",
+                    dst = negd.dst.x86_operand(OperandKind::Float)?
+                ));
+                asm.format(format_args!(
+                    "xorpd {src}, {dst}",
+                    src = negd.src.x86_operand(OperandKind::Float)?,
+                    dst = negd.dst.x86_operand(OperandKind::Float)?
+                ));
+
+                Ok(())
+            }
+
+            Self::Cfeq(_) | Self::Cdeq(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "eq", false, asm)
+            }
+
+            Self::Cfnequn(_) | Self::Cdnequn(_) => {
+                self.handle_x86_fp_compare_set(self.x86_operand_kind(), "nequn", false, asm)
+            }
+
+            Self::Fi2f(fi2f) => {
+                asm.format(
+                    format_args!(
+                        "movd {src}, {dst}",
+                        src = fi2f.src.x86_operand(OperandKind::Int)?,
+                        dst = fi2f.dst.x86_operand(OperandKind::Float)?
+                    )
+                );
+
+                Ok(())
+            }
+
+            Self::Ff2i(ff2i) => {
+                asm.format(
+                    format_args!(
+                        "cvttss2si {src}, {dst}",
+                        src = ff2i.src.x86_operand(OperandKind::Float)?,
+                        dst = ff2i.dst.x86_operand(OperandKind::Int)?
+                    )
+                );
+
+                Ok(())
+            } 
+
+            Self::TlsLoadp(ld) => {
+                let mem = if let Some(immediate) = ld.src.try_immediate() {
+                    format!(
+                        "%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _)
+                    )
+                } else {
+                    format!(
+                        "%gs:({src}, $8)",
+                        src = ld.src.x86_operand(OperandKind::Ptr)?
+                    )  
+                };
+
+                asm.format(format_args!(
+                    "movq {mem}, {dst}",
+                    mem = mem,
+                    dst = ld.dst.x86_operand(OperandKind::Ptr)?
+                ));
+
+                Ok(())
+            }
+
+            Self::TlsStorep(st) => {
+                let mem = if let Some(immediate) = st.dst.try_immediate() {
+                    format!(
+                        "%gs:{}", immediate.wrapping_mul(size_of::<usize>() as _)
+                    )
+                } else {
+                    format!(
+                        "%gs:({dst}, $8)",
+                        dst = st.dst.x86_operand(OperandKind::Ptr)?
+                    )  
+                };
+
+                asm.format(format_args!(
+                    "movq {src}, {mem}",
+                    src = st.src.x86_operand(OperandKind::Ptr)?,
+                    mem = mem
+                ));
+
+                Ok(())
+            }
+
         }
     }
 }

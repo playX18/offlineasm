@@ -575,12 +575,13 @@ impl Parse for Stmt {
         } else if input.peek(syn::token::Brace) {
             return Sequence::parse(input).map(Rc::new).map(Stmt::Sequence);
         } else if input.peek(syn::Ident) && input.peek2(syn::token::Paren) {
+            let span = input.span();
             let name = input.parse::<syn::Ident>()?;
             let content;
             let _ = syn::parenthesized!(content in input);
             let args = content.parse_terminated(MacroArgument::parse, syn::Token![,])?;
             return Ok(Stmt::MacroCall(Rc::new(MacroCall {
-                span: input.span(),
+                span,
                 name,
                 original_name: None,
                 arguments: args.into_iter().collect(),

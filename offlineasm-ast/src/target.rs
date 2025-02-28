@@ -139,6 +139,8 @@ impl Assembler {
             }
         });
 
+        println!("{output}");
+
         output
     }
 }
@@ -153,6 +155,7 @@ impl Operand {
 
             Operand::LabelReference(lref) => match &lref.label {
                 LabelMapping::Global(g) if !g.defined_in_macro.get() => {
+                    println!("extern symbol: {}", g.name);
                     asm.add_extern_symbol(g.name.clone())
                 }
                 _ => self.clone(),

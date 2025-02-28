@@ -1599,8 +1599,8 @@ macro_rules! instructions {
                 },
                 /// Branch if i64 less or equal.
                 ///
-                /// Usage: `bqleq <lhs>, <rhs>, <target>`
-                bqleq {
+                /// Usage: `bqlteq <lhs>, <rhs>, <target>`
+                bqlteq {
                     pub lhs: Operand,
                     pub rhs: Operand,
                     pub target: Operand,
