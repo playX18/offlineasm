@@ -1,8 +1,6 @@
 //! The shared compiler behind `offlineasm!` (compile-time) and
 //! `onlineasm!` (runtime).
 
-#![warn(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 pub mod ast;
 pub mod backends;
 pub mod code_origin;
