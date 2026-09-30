@@ -1,0 +1,23 @@
+[package]
+name = "onlineasm-macros"
+version = "0.1.0"
+edition = "2021"
+description = "onlineasm! proc macro: offlineasm syntax over the typed mnemonic API"
+license = "BSD-3-Clause"
+authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
+
+repository = "https://codeberg.org/playxe/offlineasm"
+documentation = "https://docs.rs/onlineasm-macros"
+keywords = ["assembler", "jit", "portable"]
+categories = ["development-tools"]
+rust-version = "1.85"
+include = ["/src/**/*", "/README.md", "/LICENSE"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.1.0" }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

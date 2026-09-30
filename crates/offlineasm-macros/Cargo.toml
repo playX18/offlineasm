@@ -1,0 +1,25 @@
+[package]
+name = "offlineasm-macros"
+version = "0.1.0"
+edition = "2021"
+description = "Portable assembler for Rust (macros)"
+license = "BSD-3-Clause"
+authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
+
+repository = "https://codeberg.org/playxe/offlineasm"
+documentation = "https://docs.rs/offlineasm-macros"
+keywords = ["assembler", "portable"]
+categories = ["development-tools"]
+rust-version = "1.85"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.1.0" }
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[dev-dependencies]
+offlineasm = { path = "../offlineasm", version = "0.1.0" }

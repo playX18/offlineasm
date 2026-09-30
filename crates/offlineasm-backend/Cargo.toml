@@ -1,0 +1,24 @@
+[package]
+name = "offlineasm-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Portable assembler for Rust (lowering backend)"
+license = "BSD-3-Clause"
+authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
+
+repository = "https://codeberg.org/playxe/offlineasm"
+documentation = "https://docs.rs/offlineasm-backend"
+keywords = ["assembler", "portable"]
+categories = ["development-tools"]
+rust-version = "1.85"
+include = ["/src/**/*", "/tests/**/*", "/docs/**/*", "/README.md", "/LICENSE"]
+
+[lib]
+name = "offlineasm_backend"
+path = "src/lib.rs"
+
+[dependencies]
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.1.0" }
+syn = { version = "2", features = ["full", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"

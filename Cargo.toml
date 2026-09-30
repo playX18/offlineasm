@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/offlineasm-backend",
+    "crates/offlineasm-ir",
+    "crates/offlineasm-macros",
+    "crates/onlineasm-macros",
+    "crates/onlineasm",
+    "crates/offlineasm",
+]

@@ -1,0 +1,38 @@
+[package]
+name = "onlineasm"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal portable runtime assembler with offlineasm mnemonics"
+license = "BSD-3-Clause"
+authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
+
+repository = "https://codeberg.org/playxe/offlineasm"
+documentation = "https://docs.rs/onlineasm"
+keywords = ["assembler", "jit", "portable"]
+categories = ["development-tools"]
+rust-version = "1.85"
+include = [
+    "/src/**/*",
+    "/examples/**/*",
+    "/tests/**/*",
+    "/docs/**/*",
+    "/build.rs",
+    "/README.md",
+    "/LICENSE",
+]
+
+[lib]
+name = "onlineasm"
+path = "src/lib.rs"
+
+[dependencies]
+asmkit-rs = { version = "0.7.2", features = ["x86", "aarch64", "riscv", "jit"] }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.1.0" }
+onlineasm-macros = { path = "../onlineasm-macros", version = "0.1.0" }
+
+[dev-dependencies]
+capstone = "0.14"
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.1.0" }
+
+[build-dependencies]
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.1.0" }
