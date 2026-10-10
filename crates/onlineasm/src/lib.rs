@@ -608,7 +608,8 @@ impl Assembler {
             }
             assert!(
                 self.buf.cur_offset() > before,
-                "onlineasm: `nop` did not advance the buffer"
+                "onlineasm: `nop` did not advance the buffer (buffer error: {:?})",
+                self.buf.error()
             );
         }
     }

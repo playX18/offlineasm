@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm-ir"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Shared mnemonic IR for the offlineasm and onlineasm assemblers"
 license = "BSD-3-Clause"
@@ -18,4 +18,4 @@ name = "offlineasm_ir"
 path = "src/lib.rs"
 
 [dev-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.1.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.2.0" }

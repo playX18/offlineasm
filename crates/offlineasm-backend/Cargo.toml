@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm-backend"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Portable assembler for Rust (lowering backend)"
 license = "BSD-3-Clause"
@@ -18,7 +18,7 @@ name = "offlineasm_backend"
 path = "src/lib.rs"
 
 [dependencies]
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.1.0" }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.2.0" }
 syn = { version = "2", features = ["full", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
