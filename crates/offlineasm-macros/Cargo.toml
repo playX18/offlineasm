@@ -20,6 +20,3 @@ offlineasm-backend = { path = "../offlineasm-backend", version = "0.2.0" }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-
-[dev-dependencies]
-offlineasm = { path = "../offlineasm", version = "0.2.0" }

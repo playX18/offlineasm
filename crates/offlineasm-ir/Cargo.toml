@@ -16,6 +16,3 @@ include = ["/src/**/*", "/README.md", "/LICENSE"]
 [lib]
 name = "offlineasm_ir"
 path = "src/lib.rs"
-
-[dev-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.2.0" }
