@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Portable assembler for Rust"
 license = "BSD-3-Clause"
@@ -12,11 +12,11 @@ rust-version = "1.85"
 
 
 [dependencies]
-offlineasm-macros = { path = "../offlineasm-macros", version = "0.2.0" }
+offlineasm-macros = { path = "../offlineasm-macros", version = "0.3.0" }
 
 [dev-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.2.0" }
-onlineasm = { path = "../onlineasm", version = "0.2.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.0" }
+onlineasm = { path = "../onlineasm", version = "0.3.0" }
 
 [build-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.2.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.0" }
