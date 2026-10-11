@@ -33,6 +33,31 @@
 //! # }
 //! ```
 //!
+//! ## Backward assembly
+//!
+//! [`BackwardAssembler`] records all calls to assembler, `onlineasm!()` 
+//! invocations, and then replays them in reverse order at `finish`, so
+//! last emitted instruction executes first:
+//!
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use onlineasm::{onlineasm, BackwardAssembler, JitAllocator};
+//!
+//! let mut asm = BackwardAssembler::native_backward();
+//! onlineasm!(asm;
+//!     ret;
+//!     addq t0, 41;
+//!     move t0, 1;
+//! );
+//! let code = asm.finish()?;
+//! let mut jit = JitAllocator::new(Default::default());
+//! let span = code.allocate(&mut jit)?;
+//! let f: extern "C" fn() -> u64 = unsafe { std::mem::transmute(span.rx()) };
+//! assert_eq!(f(), 42);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## External symbols
 //!
 //! Generated code references host functions and data by [`ExternalName`]
@@ -67,6 +92,7 @@ use asmkit::{
 use offlineasm_ir::Lbl;
 
 mod aarch64;
+mod backward;
 mod insn;
 mod lower;
 mod riscv64;
@@ -389,11 +415,13 @@ pub use asmkit;
 ///
 /// A wrapper over [`asmkit::CodeBuffer`] plus the data needed for emission.
 ///
+/// `BACKWARD` selects the emission direction at compile time.
+///
 /// NOTE: instruction documentation cannot be generated automatically, and to save time
 /// most of the comments on scratches and instruction behaviour
 /// are pasted from [`mod@reference`]. This process is manual at the moment, and
 /// they could be outdated, consult reference if you want most up to date information.
-pub struct Assembler {
+pub struct Assembler<const BACKWARD: bool = false> {
     info: &'static TargetInfo,
     target: Target,
     buf: CodeBuffer,
@@ -401,16 +429,23 @@ pub struct Assembler {
     labels: Vec<asmkit::Label>,
     externs: Vec<(ExternalName, Extern)>,
     abi: Abi,
+    tape: backward::ReverseTape,
 }
 
-impl Assembler {
-    /// Creates an assembler for `target`.
-    pub fn new(target: Target) -> Self {
-        Self::with_options(AssemblerOptions::detected(target))
-    }
+/// An [`Assembler`] that lowers each call in program order.
+pub type ForwardAssembler = Assembler<false>;
 
-    /// Creates an assembler for `target` with explicit [`AssemblerOptions`].
-    pub fn with_options(options: AssemblerOptions) -> Self {
+/// An [`Assembler`] that replays recorded calls in reverse at
+/// [`finish`](Assembler::finish), so the last emitted instruction executes
+/// first.
+///
+/// Labels and patch handles created during emission are *virtual*, and are not
+/// accessible until `finish` is called. You cannot use `code_buffer` of such assembler
+/// *during* emission.
+pub type BackwardAssembler = Assembler<true>;
+
+impl<const BACKWARD: bool> Assembler<BACKWARD> {
+    fn with_options_inner(options: AssemblerOptions) -> Self {
         let target = options.target();
         let info = target.info();
         Self {
@@ -421,7 +456,13 @@ impl Assembler {
             labels: Vec::new(),
             externs: Vec::new(),
             abi: options.abi,
+            tape: backward::ReverseTape::new(),
         }
+    }
+
+    /// Returns true if this assembler is backwards.
+    pub const fn is_backward(&self) -> bool {
+        BACKWARD
     }
 
     /// Declares external symbol `name`, reached as `reach`, and returns the
@@ -466,6 +507,9 @@ impl Assembler {
     }
 
     /// Returns the underlying code buffer.
+    ///
+    /// On a [`BackwardAssembler`] this holds only declarations (externs)
+    /// until [`finish`](Assembler::finish) replays the recorded tape.
     pub fn code_buffer(&self) -> &CodeBuffer {
         &self.buf
     }
@@ -484,11 +528,6 @@ impl Assembler {
     /// ([`AssemblerOptions::with_pic`]).
     pub fn pic(&self) -> bool {
         self.environment().pic()
-    }
-
-    /// Creates an assembler for the host architecture.
-    pub fn native() -> Self {
-        Self::new(Target::native())
     }
 
     /// Returns the assembler's target.
@@ -550,7 +589,18 @@ impl Assembler {
     }
 
     /// Creates a new label.
+    ///
+    /// On a [`BackwardAssembler`] the label is virtual until
+    /// [`finish`](Assembler::finish) maps it onto the replayed code.
     pub fn label(&mut self) -> Label {
+        if BACKWARD {
+            self.tape.next_virtual()
+        } else {
+            self.label_forward()
+        }
+    }
+
+    fn label_forward(&mut self) -> Label {
         let l = self.buf.get_label();
         self.labels.push(l);
         Label(self.labels.len() as u32 - 1)
@@ -570,6 +620,14 @@ impl Assembler {
     ///
     /// Panics if `label` belongs to another assembler.
     pub fn bind(&mut self, label: Label) {
+        if BACKWARD {
+            self.tape.push_bind(label);
+        } else {
+            self.bind_forward(label);
+        }
+    }
+
+    fn bind_forward(&mut self, label: Label) {
         let l = self.asm_label(label);
         self.buf.bind_label(l);
     }
@@ -579,11 +637,23 @@ impl Assembler {
     /// shrinks jumps to rel8 where they reach, which moves the code after
     /// them. Finalized offsets are available through [`Finished::offset`].
     ///
+    /// On a [`BackwardAssembler`] this always reports `u32::MAX`: offsets do
+    /// not exist until [`finish`](Assembler::finish) replays the tape.
+    ///
     /// # Panics
     ///
     /// Panics if `label` belongs to another assembler.
+    #[allow(clippy::panic)]
     pub fn offset(&self, label: Label) -> u32 {
-        self.buf.label_offset(self.asm_label(label))
+        if BACKWARD {
+            if self.tape.is_virtual(label) {
+                u32::MAX
+            } else {
+                panic!("onlineasm: label handle does not belong to this assembler");
+            }
+        } else {
+            self.buf.label_offset(self.asm_label(label))
+        }
     }
 
     /// Pads with architecture `nop`s until the next emitted instruction is
@@ -597,13 +667,21 @@ impl Assembler {
             alignment.is_power_of_two(),
             "onlineasm: alignment {alignment} is not a power of two"
         );
+        if BACKWARD {
+            self.tape.push_align(alignment);
+        } else {
+            self.align_forward(alignment);
+        }
+    }
+
+    fn align_forward(&mut self, alignment: u32) {
         if self.target == Target::X64 {
             self.buf.align_to(alignment);
             return;
         }
         while self.buf.cur_offset() & (alignment - 1) != 0 {
             let before = self.buf.cur_offset();
-            if self.emit(Mnemonic::Nop, &[]).is_err() {
+            if self.emit_forward(Mnemonic::Nop, &[]).is_err() {
                 unreachable!("the built-in `nop` lowering cannot fail");
             }
             assert!(
@@ -625,6 +703,14 @@ impl Assembler {
     ///
     /// Panics when the buffer already failed.
     pub fn embed_data(&mut self, data: &[u8]) -> Label {
+        if BACKWARD {
+            self.tape.push_embed(data)
+        } else {
+            self.embed_data_forward(data)
+        }
+    }
+
+    fn embed_data_forward(&mut self, data: &[u8]) -> Label {
         let constant = self.buf.add_constant(data.to_vec());
         self.labels.push(self.buf.get_label_for_constant(constant));
         Label(self.labels.len() as u32 - 1)
@@ -686,6 +772,16 @@ impl Assembler {
     ///
     /// Returns an error if the mnemonic is offlineasm-only or lowering fails.
     pub fn emit(&mut self, mnemonic: Mnemonic, ops: &[Op]) -> Result<(), LowerError> {
+        if BACKWARD {
+            reject_offlineasm_only(mnemonic, ops)?;
+            self.tape.push_emit(mnemonic, ops);
+            Ok(())
+        } else {
+            self.emit_forward(mnemonic, ops)
+        }
+    }
+
+    fn emit_forward(&mut self, mnemonic: Mnemonic, ops: &[Op]) -> Result<(), LowerError> {
         reject_offlineasm_only(mnemonic, ops)?;
         (self.info.lower)(
             &mut self.buf,
@@ -706,11 +802,29 @@ impl Assembler {
 
     /// Emits one onlineasm mnemonic and returns its patch handle.
     ///
+    /// On a [`BackwardAssembler`] the call is recorded and the returned
+    /// handle is virtual until [`finish`](Assembler::finish) replays the
+    /// tape; resolve it with [`Finished::location`] afterwards.
+    ///
     /// # Errors
     ///
     /// Returns an error if the mnemonic is offlineasm-only, lowering fails,
-    /// or the mnemonic is not patchable.
+    /// or the mnemonic is not patchable. On a [`BackwardAssembler`],
+    /// lowering failures surface at [`finish`](Assembler::finish) instead.
     pub fn emit_patched(
+        &mut self,
+        mnemonic: Mnemonic,
+        ops: &[Op],
+    ) -> Result<PatchHandle, LowerError> {
+        if BACKWARD {
+            reject_offlineasm_only(mnemonic, ops)?;
+            Ok(self.tape.push_emit_patched(mnemonic, ops))
+        } else {
+            self.emit_forward_patched(mnemonic, ops)
+        }
+    }
+
+    fn emit_forward_patched(
         &mut self,
         mnemonic: Mnemonic,
         ops: &[Op],
@@ -726,27 +840,174 @@ impl Assembler {
         )
     }
 
-    /// Finalizes the code buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if finalization fails.
-    pub fn finish(mut self) -> Result<Finished, AsmError> {
+    /// Finalizes the buffer, reporting offsets for `labels` in order.
+    /// `virtual_patches` resolves backward handles in [`Finished::location`].
+    fn finalize(
+        mut self,
+        labels: &[asmkit::Label],
+        virtual_patches: Vec<PatchHandle>,
+    ) -> Result<Finished, AsmError> {
         self.buf.emit_island(u32::MAX)?;
-        let labels = std::mem::take(&mut self.labels);
         let inner = self.buf.finish()?;
         let offsets: Vec<u32> = labels.iter().map(|l| inner.label_offset(*l)).collect();
         Ok(Finished {
             inner,
             offsets,
             linked: false,
+            virtual_patches,
         })
     }
 }
 
-impl Default for Assembler {
+impl Assembler<false> {
+    /// Creates an assembler for `target`.
+    ///
+    /// This constructor is only available on [`ForwardAssembler`], so a bare
+    /// `Assembler::new(..)` keeps meaning forward. Backward assembly starts
+    /// from [`BackwardAssembler::new_backward`].
+    pub fn new(target: Target) -> Self {
+        Self::with_options(AssemblerOptions::detected(target))
+    }
+
+    /// Creates an assembler for `target` with explicit [`AssemblerOptions`].
+    pub fn with_options(options: AssemblerOptions) -> Self {
+        Self::with_options_inner(options)
+    }
+
+    /// Creates an assembler for the host architecture.
+    pub fn native() -> Self {
+        Self::new(Target::native())
+    }
+
+    /// Finalizes the code buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if finalization fails.
+    pub fn finish(mut self) -> Result<Finished, AsmError> {
+        let labels = std::mem::take(&mut self.labels);
+        self.finalize(&labels, Vec::new())
+    }
+}
+
+impl Assembler<true> {
+    /// Creates a backward assembler for `target`.
+    ///
+    /// Calls on the returned assembler record onto a tape that
+    /// [`finish`](Assembler::finish) replays in reverse.
+    pub fn new_backward(target: Target) -> Self {
+        Self::with_options_backward(AssemblerOptions::detected(target))
+    }
+
+    /// Creates a backward assembler for `target` with explicit
+    /// [`AssemblerOptions`].
+    pub fn with_options_backward(options: AssemblerOptions) -> Self {
+        Self::with_options_inner(options)
+    }
+
+    /// Creates a backward assembler for the host architecture.
+    pub fn native_backward() -> Self {
+        Self::new_backward(Target::native())
+    }
+
+    /// Replays the recorded calls in reverse and finalizes the code buffer.
+    ///
+    /// The last-recorded call is lowered first, so it executes first.
+    /// Virtual labels created while recording resolve onto the replayed code,
+    /// and [`Finished::offset`] has them afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackwardFinishError::Lower`] when a recorded call fails to
+    /// lower, or [`BackwardFinishError::Finalize`] when finalization fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a recorded operand names a label from another assembler.
+    pub fn finish(mut self) -> Result<Finished, BackwardFinishError> {
+        let virtual_count = self.tape.virtual_count();
+        let patch_count = self.tape.patch_count();
+        let items = self.tape.take();
+        // Embedded constants always land in the island, wherever the call
+        // sits on the tape, so declare them first.
+        let mut embedded: Vec<Option<&[u8]>> = vec![None; virtual_count as usize];
+        for item in &items {
+            if let backward::TapeItem::Embed { data, label } = item {
+                embedded[label.0 as usize] = Some(data);
+            }
+        }
+        let mut real: Vec<Label> = Vec::with_capacity(virtual_count as usize);
+        for payload in embedded {
+            match payload {
+                Some(data) => real.push(self.embed_data_forward(data)),
+                None => real.push(self.label_forward()),
+            }
+        }
+
+
+        let mut patches: Vec<PatchHandle> = Vec::with_capacity(patch_count as usize);
+        for (position, item) in items.iter().rev().enumerate() {
+            let index = items.len() - 1 - position;
+            match item {
+                backward::TapeItem::Emit { mnemonic, ops } => {
+                    let ops = backward::remap_ops(ops, &real);
+                    self.emit_forward(*mnemonic, &ops)
+                        .map_err(|source| BackwardFinishError::Lower { index, source })?;
+                }
+                backward::TapeItem::EmitPatched { mnemonic, ops } => {
+                    let ops = backward::remap_ops(ops, &real);
+                    let handle = self
+                        .emit_forward_patched(*mnemonic, &ops)
+                        .map_err(|source| BackwardFinishError::Lower { index, source })?;
+                    patches.push(handle);
+                }
+                backward::TapeItem::Bind(v) => {
+                    self.bind_forward(backward::remap_label(*v, &real));
+                }
+                backward::TapeItem::Align(alignment) => self.align_forward(*alignment),
+                backward::TapeItem::Embed { .. } => {}
+            }
+        }
+        patches.reverse();
+        let labels: Vec<asmkit::Label> = real.iter().map(|r| self.labels[r.0 as usize]).collect();
+        self.finalize(&labels, patches)
+            .map_err(BackwardFinishError::Finalize)
+    }
+}
+
+impl Default for Assembler<false> {
     fn default() -> Self {
         Self::native()
+    }
+}
+
+/// Failure to replay a backward assembler's tape at
+/// [`finish`](Assembler::finish).
+#[derive(Debug)]
+pub enum BackwardFinishError {
+    /// Replaying the recorded call at tape position `index` failed to lower.
+    Lower { index: usize, source: LowerError },
+    /// Finalization failed after a successful replay.
+    Finalize(AsmError),
+}
+
+impl std::fmt::Display for BackwardFinishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lower { index, source } => {
+                write!(f, "replaying recorded call {index} failed: {source}")
+            }
+            Self::Finalize(e) => write!(f, "finalization failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for BackwardFinishError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lower { source, .. } => Some(source),
+            Self::Finalize(e) => Some(e),
+        }
     }
 }
 
@@ -755,10 +1016,11 @@ pub struct Finished {
     inner: CodeBufferFinalized,
     offsets: Vec<u32>,
     linked: bool,
+    virtual_patches: Vec<PatchHandle>,
 }
 
 /// Where a [`PatchHandle`] is in a [`Finished`] image.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatchLocation {
     /// A jump or call, retargeted with [`asmkit::repatch_jump_span`].
     Jump(CodeLocationJump),
@@ -788,9 +1050,16 @@ impl Finished {
         if self.linked {
             return None;
         }
-        Some(match handle {
+        let real = match handle {
+            PatchHandle::Virtual(id) => *self.virtual_patches.get(id as usize)?,
+            real => real,
+        };
+        Some(match real {
             PatchHandle::Jump(jump) => PatchLocation::Jump(self.inner.location_of(jump)),
             PatchHandle::Data(data) => PatchLocation::Data(self.inner.location_of(data)),
+            PatchHandle::Virtual(_) => {
+                unreachable!("onlineasm: resolved patch handle is never virtual")
+            }
         })
     }
 
@@ -851,6 +1120,7 @@ impl Finished {
             inner: linker.link()?,
             offsets: Vec::new(),
             linked: true,
+            virtual_patches: Vec::new(),
         })
     }
 
@@ -887,11 +1157,11 @@ pub unsafe fn repatch_u64(
 /// Converts a Rust value into an assembler operand.
 pub trait IntoOperand {
     /// Converts `self` into an operand, resolving vregs against `asm`.
-    fn into_operand(self, asm: &Assembler) -> Op;
+    fn into_operand<const BACKWARD: bool>(self, asm: &Assembler<BACKWARD>) -> Op;
 }
 
 impl IntoOperand for Op {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         self
     }
 }
@@ -899,7 +1169,7 @@ impl IntoOperand for Op {
 macro_rules! imm_operand {
     ($($t:ty),* $(,)?) => {
         $(impl IntoOperand for $t {
-            fn into_operand(self, _asm: &Assembler) -> Op {
+            fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
                 Op::Imm(self as i64)
             }
         })*
@@ -908,37 +1178,37 @@ macro_rules! imm_operand {
 imm_operand!(i8, i16, i32, i64, u8, u16, u32, u64, isize, usize);
 
 impl IntoOperand for Gpr {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         Op::Gpr(self)
     }
 }
 
 impl IntoOperand for Fpr {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         Op::Fpr(self)
     }
 }
 
 impl IntoOperand for Mem {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         Op::Mem(self)
     }
 }
 
 impl IntoOperand for Extern {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         Op::Extern(self)
     }
 }
 
 impl IntoOperand for Label {
-    fn into_operand(self, _asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &Assembler<BACKWARD>) -> Op {
         Op::Label(Lbl::Bound(self))
     }
 }
 
 impl IntoOperand for VReg {
-    fn into_operand(self, asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, asm: &Assembler<BACKWARD>) -> Op {
         match self.kind() {
             RegKind::Gpr => Op::Gpr(asm.vreg_gpr(self)),
             RegKind::Fpr => Op::Fpr(asm.vreg_fpr(self)),
@@ -947,7 +1217,7 @@ impl IntoOperand for VReg {
 }
 
 impl<T: IntoOperand + Copy> IntoOperand for &T {
-    fn into_operand(self, asm: &Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, asm: &Assembler<BACKWARD>) -> Op {
         (*self).into_operand(asm)
     }
 }

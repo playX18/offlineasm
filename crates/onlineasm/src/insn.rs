@@ -27,7 +27,7 @@ macro_rules! mnemonic_methods {
     ($(@fixed $name:ident, $mn:literal $(, $arg:ident)*;)*
      $(@variadic $vname:ident, $vmn:literal;)*) => {
         #[allow(non_snake_case)]
-        impl Assembler {
+        impl<const BACKWARD: bool> Assembler<BACKWARD> {
             $( mnemonic_methods!(@fixed $name, $mn $(, $arg)*); )*
 
             $(#[doc = concat!("Emit `", $vmn, "` with a variable number of operands.")]

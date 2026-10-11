@@ -702,7 +702,7 @@ impl Inst {
     /// Visits every label this instruction binds, branches to, or names.
     ///
     /// Frontends use this to resolve the opaque handles of one expansion
-    /// (notably the `Fresh` labels `expand` mints) before printing or
+    /// (notably the `Fresh` labels `expand` creates) before printing or
     /// encoding the sequence.
     pub fn visit_labels(&self, f: &mut dyn FnMut(Lbl)) {
         fn visit_op(f: &mut dyn FnMut(Lbl), o: &Op) {

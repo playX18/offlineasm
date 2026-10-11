@@ -282,13 +282,13 @@ impl Br {
 }
 
 impl crate::IntoOperand for Gp {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Gpr(gpr_id(self))
     }
 }
 
 impl crate::IntoOperand for Vec {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Fpr(fpr_id(self))
     }
 }

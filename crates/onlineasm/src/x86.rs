@@ -282,25 +282,25 @@ fn branch_to(
 }
 
 impl crate::IntoOperand for Gp {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Gpr(gpr_id(self))
     }
 }
 
 impl crate::IntoOperand for Gpq {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Gpr(gpr_id(self.0))
     }
 }
 
 impl crate::IntoOperand for Gpd {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Gpr(gpr_id(self.0))
     }
 }
 
 impl crate::IntoOperand for Xmm {
-    fn into_operand(self, _asm: &crate::Assembler) -> Op {
+    fn into_operand<const BACKWARD: bool>(self, _asm: &crate::Assembler<BACKWARD>) -> Op {
         Op::Fpr(fpr_id(self))
     }
 }
