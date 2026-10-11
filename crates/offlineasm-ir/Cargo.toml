@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm-ir"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Shared mnemonic IR for the offlineasm and onlineasm assemblers"
 license = "BSD-3-Clause"

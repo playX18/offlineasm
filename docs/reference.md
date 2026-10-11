@@ -238,6 +238,40 @@ onlineasm) reaches every extern through the table, as if it were declared far.
 | RISC-V 64 near | `lla d, sym` | `call sym` / `jump sym, x31` |
 | RISC-V 64 far | `lga d, sym` | the far address into `x31`, then `jalr` |
 
+## Patching emitted code
+
+onlineasm only. `#[patch = name]` on an instruction emits it through a
+patchable site and binds the site's `PatchHandle` to `name` (the
+`Assembler::emit_patched` equivalent outside the macro). After `finish`,
+`Finished::location` turns the handle into a `PatchLocation`: a jump site is
+retargeted with `asmkit::repatch_jump_span`, an immediate site rewritten with
+`onlineasm::repatch_u64`. Both stay writable, and no thread may execute the
+patched instruction while it is rewritten.
+
+| Mnemonic | Site | Restrictions |
+| --- | --- | --- |
+| `jmp`, `call` | jump | `O1` must be a label. Register, memory, absolute, and external targets are not patchable. |
+| `move` | 64-bit immediate | `O1` must be a register and `O2` an immediate. |
+| integer branches (`bieq`, `bqeq`, ...), test branches (`btqz`, ...), flag branches (`bo`, `bs`, `bz`, `bnz`), arithmetic branches (`baddqo`, ...), float branches (`bdeq`, ...) | jump | The expansion must be a single branch: float conditions that need several branches are not patchable (which ones depends on the target), and neither is the overflow-of-`or` branch (`borio`/`borqo`), which emits no branch at all. |
+
+An external symbol is never a patch site. Anything else fails with
+`NotPatchable` (a panic naming the mnemonic from the macro).
+
+`#[patch_abs = name]` (macro only) on `jmp`/`call` with an integer or `{expr}`
+target reserves a 64-bit absolute-address slot for callees outside jump range:
+it emits a patchable `move` of the target into the expansion scratch GPR
+followed by an indirect jump/call through it, and binds the `move`'s immediate
+site. The scratch GPR is clobbered.
+
+Handles from a backward assembler are virtual until `finish` replays the tape,
+and resolve through `Finished::location` like any other handle.
+`Finished::link` drops every handle: `location` on a linked image returns
+`None`. To patch before allocating, apply `asmkit::repatch_jump` /
+`asmkit::repatch_value` to a copy of `Finished::data` instead.
+
+See `Assembler::emit_patched` and the `patch` example (`cargo run -p onlineasm
+--example patch`).
+
 ## 1. Memory operations
 
 ### Scratch registers
@@ -350,6 +384,9 @@ RISC-V 64. On x86-64 the offset has to fit a signed 32-bit displacement.
 ```text
 X[O1] = X[O2];
 ```
+
+Accepts `#[patch]` in `onlineasm` when `O1` is a register and `O2` is an
+immediate; see [Patching emitted code](#patching-emitted-code).
 
 ### `loadi O1, O2`
 
@@ -2546,6 +2583,11 @@ X[O1] = if !IsZeroBit(X[O2]<7:0>) then 1 else 0;
 
 ## 6. Branches and control flow
 
+Every branch in this section accepts `#[patch]` in `onlineasm` (a jump site),
+except float conditions that expand to several branches and the
+overflow-of-`or` arithmetic branch; see
+[Patching emitted code](#patching-emitted-code).
+
 ### Scratch registers
 
 Integer compare branches: `bieq`, `bineq`, `bia`, `biaeq`, `bib`, `bibeq`, `bigt`, `bigteq`, `bilt`, `bilteq`, and the same conditions for `bb*`, `bp*`, `bq*`.
@@ -3713,7 +3755,9 @@ endif
 BranchTo(O1);
 ```
 
-Accepts `#[patch]` in `onlineasm`. `O1` may be an [external symbol](#external-symbols).
+Accepts `#[patch]` in `onlineasm` with a label `O1` (see
+[Patching emitted code](#patching-emitted-code)); `#[patch_abs]` takes an
+absolute target instead. `O1` may be an [external symbol](#external-symbols).
 
 ### `call O1`
 
@@ -3722,7 +3766,9 @@ LR = PC;
 BranchTo(O1);
 ```
 
-Accepts `#[patch]` in `onlineasm`. `O1` may be an [external symbol](#external-symbols).
+Accepts `#[patch]` in `onlineasm` with a label `O1` (see
+[Patching emitted code](#patching-emitted-code)); `#[patch_abs]` takes an
+absolute target instead. `O1` may be an [external symbol](#external-symbols).
 
 On RISC-V 64, `call` keeps `ra`: it spills `ra` to a 16-byte slot below `sp` around the transfer,
 so the callee starts with `sp` 16 bytes lower and `ra` is unchanged when the call returns. On x86-64

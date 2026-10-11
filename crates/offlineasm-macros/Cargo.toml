@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm-macros"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Portable assembler for Rust (macros)"
 license = "BSD-3-Clause"
@@ -16,7 +16,7 @@ rust-version = "1.85"
 proc-macro = true
 
 [dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.1" }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = { version = "1", features = ["span-locations"] }

@@ -4,13 +4,23 @@ use std::collections::HashMap;
 /// Lowering failure from the shared expansion.
 pub use offlineasm_ir::ExpandError as LowerError;
 
-/// Mark for one `#[patch]` site in the emitted code. Turn it into a
-/// location in the finished image with [`Finished::location`](crate::Finished::location).
+/// Mark for one `#[patch]` site in the emitted code.
+///
+/// Bound by `#[patch = name]` / `#[patch_abs = name]` in
+/// [`onlineasm!`](crate::onlineasm), or returned by
+/// [`Assembler::emit_patched`](crate::Assembler::emit_patched) (see it for
+/// which instructions are patchable). Turn it into a location in the finished
+/// image with [`Finished::location`](crate::Finished::location), then retarget
+/// a jump with [`asmkit::repatch_jump_span`](crate::asmkit::repatch_jump_span)
+/// or rewrite an immediate with
+/// [`repatch_u64`](crate::repatch_u64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatchHandle {
-    /// A jump or call whose target can be changed.
+    /// A jump or call (`#[patch]` on `jmp`/`call`/branches) whose target can
+    /// be changed.
     Jump(asmkit::PatchableJump),
-    /// An immediate that can be rewritten.
+    /// An immediate (`#[patch]` on `move`, or the address slot of
+    /// `#[patch_abs]`) that can be rewritten.
     Data(asmkit::DataLabel),
     /// A site recorded by a backward assembler. It holds no code position
     /// until [`finish`](crate::Assembler::finish) replays the tape. Resolve

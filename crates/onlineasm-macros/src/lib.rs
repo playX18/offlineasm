@@ -1,15 +1,23 @@
 //! `onlineasm!` emits runtime assembly using offlineasm mnemonics.
 //!
 //! ```ignore
+//! use onlineasm::{onlineasm, Assembler, JitAllocator};
+//!
+//! let mut asm = Assembler::native();
+//! let mut jit = JitAllocator::new(Default::default());
 //! onlineasm!(asm;
-//!     move t0, 0;
-//!     move t1, {n};
-//! .loop:
-//!     addi t0, t1;
-//!     btinz t0, .loop;
-//!     #[patch = done] jmp end;
-//! =>end;
+//!     #[patch = slot] move t0, 0;
+//!     ret;
 //! );
+//! // `slot` is the `PatchHandle`, usable after the macro like a `=>` binding.
+//! let code = asm.finish().expect("finish");
+//! let location = code.location(slot).expect("slot is bound");
+//! let mut span = code.allocate(&mut jit).expect("allocate");
+//! // SAFETY: `span` holds `code`, and nothing executes the patched
+//! // instruction while it is rewritten.
+//! unsafe {
+//!     onlineasm::repatch_u64(&mut jit, &mut span, &location, 42).expect("repatch");
+//! }
 //! ```
 //!
 //! Rules:
@@ -18,10 +26,9 @@
 //!   rest are `;`-separated statements.
 //! * `.name:` defines a local label, referenced as `.name`. `=>name` binds a
 //!   fresh label at the current position to the Rust variable `name`.
-//!   `#[patch = name]` / `#[patch_abs = name]` bind the emitted
-//!   `PatchHandle` to `name`. Bindings introduced by `=>` and `#[patch]`
-//!   are returned from the macro (statement position) so they stay usable
-//!   afterwards. There are no string label maps.
+//!   Bindings introduced by `=>`, `extern`, and `#[patch]` are returned from
+//!   the macro (statement position) so they stay usable afterwards. There are
+//!   no string label maps.
 //! * Operands: integer literals (decimal/`0x`/`0o`/`0b`, signed), offlineasm
 //!   vregs such as `t0`, `ft0`, and `sp` (there is no built-in `arg0`-`arg7`.
 //!   Declare your own `VReg` constant and splice it. A bare `argN` is a
@@ -32,11 +39,25 @@
 //!   on AArch64 and the full psABI name set on RISC-V), `.name` label
 //!   references, `[base + index*scale + disp]` memory, and `{expr}` splices
 //!   of Rust values (`VReg`, `Gpr`, `Fpr`, `Mem`, `Label`, integers).
-//! * `#[patch = name]` emits an instruction through a patchable site/block.
-//!   `#[patch_abs = name]` on `jmp`/`call` materializes a 64-bit absolute
-//!   target through the expansion scratch GPR and branches indirectly. Use
-//!   `onlineasm::repatch_u64` (or the asmkit `repatch_*` functions) to fill it in after
-//!   allocation.
+//! * `#[patch = name]` emits the instruction through a patchable site and
+//!   binds its `PatchHandle` to `name`. Patchable instructions:
+//!   `jmp`/`call` with a label target (a jump site), `move` with a register
+//!   destination and an immediate source (an immediate site), and conditional
+//!   branches (a jump site), except float conditions that expand to several
+//!   branches and the overflow-of-`or` arithmetic branch (`borio`/`borqo`),
+//!   which emits no branch at all. An external symbol is never a patch site.
+//!   `#[patch]` on anything but an instruction is a compile error; a
+//!   non-patchable mnemonic or operand shape panics at emission, naming the
+//!   mnemonic. After `finish`, `Finished::location` turns the handle into a
+//!   `PatchLocation`: retarget a jump with `asmkit::repatch_jump_span`, or
+//!   rewrite an immediate with `onlineasm::repatch_u64`.
+//! * `#[patch_abs = name]` on `jmp`/`call` with an integer or `{expr}` target
+//!   reserves a 64-bit absolute-address slot: it emits a patchable `move` of
+//!   the target into the expansion scratch GPR followed by an indirect
+//!   jump/call through it, and binds the `move`'s `PatchHandle` (an immediate
+//!   site) to `name`, for `onlineasm::repatch_u64` to fill in after
+//!   allocation. The scratch GPR is clobbered. Any other mnemonic, or a
+//!   target that is neither an integer nor `{expr}`, is a compile error.
 //!
 //! * `extern name = {expr};` declares the external symbol `{expr}` (anything
 //!   `Into<onlineasm::ExternalName>`) and binds the `onlineasm::Extern` to
@@ -816,6 +837,9 @@ fn parse_mem_disp_after_sign(input: ParseStream, neg: bool) -> syn::Result<MemDi
     Err(input.error("displacement must be an integer literal or {expr}"))
 }
 
+/// Emits runtime assembly using offlineasm mnemonics.
+///
+/// See the [crate-level documentation](crate) for the syntax and rules.
 #[proc_macro]
 pub fn onlineasm(input: TokenStream) -> TokenStream {
     match onlineasm_inner(input.into()) {
@@ -1011,7 +1035,7 @@ fn emit_stmt(
                             let __onlineasm_scratch = __onlineasm_asm.scratch().gpr;
                             let #handle = match __onlineasm_asm.emit_patched(
                                 #move_ident,
-                                &[#target, ::onlineasm::Op::Gpr(__onlineasm_scratch)],
+                                &[::onlineasm::Op::Gpr(__onlineasm_scratch), #target],
                             ) {
                                 ::std::result::Result::Ok(__h) => __h,
                                 ::std::result::Result::Err(__e) => {

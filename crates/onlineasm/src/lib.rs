@@ -81,6 +81,18 @@
 //! (x86-64 and RISC-V 64: +/-2 GiB; AArch64 `bl`/`b`: +/-128 MiB, `adrp`:
 //! +/-4 GiB); loading fails otherwise.
 //!
+//! ## Patching emitted code
+//!
+//! A `#[patch = name]` instruction in [`onlineasm!`](crate::onlineasm) (or
+//! [`Assembler::emit_patched`]) emits through a patchable site and binds its
+//! [`PatchHandle`] to `name`. After [`finish`](Assembler::finish),
+//! [`Finished::location`] turns the handle into a [`PatchLocation`]: either a
+//! jump, retargeted with [`asmkit::repatch_jump_span`], or a 64-bit
+//! immediate, rewritten with [`repatch_u64`]. Jumps and calls with an
+//! absolute (non-label) target use `#[patch_abs = name]` instead, which
+//! reserves a 64-bit address slot and branches to it indirectly. See
+//! [`Assembler::emit_patched`] for the patchable instructions, and the `patch` example (`cargo run -p onlineasm --example
+//! patch`) for all three flows.
 //!
 //! ## Instruction reference
 //!
@@ -121,6 +133,51 @@ pub use ir::{
     Disp, Extern, Fpr, Gpr, Label, LowerError, Mem, Mnemonic, Op, PatchHandle, Reach, Scratch,
     SymId, SUPPORTED_MNEMONICS,
 };
+/// Emits runtime assembly using offlineasm mnemonics.
+///
+/// ```text
+/// onlineasm!(assembler; statement ...)
+///
+/// statement :=
+///     | `.name:`                        define a local label
+///     | `=>name`                         bind a fresh label to `name`
+///     | `extern [near] name = {expr}`    bind an external symbol to `name`
+///     | `[attr] mnemonic operand, ...`   one instruction
+///
+/// attr    := `#[patch = name]` | `#[patch_abs = name]` (`jmp`/`call` only)
+/// operand := integer | register | `%register` | `.name` | `{expr}`
+///          | `[base [+ index [* scale]] [+/- disp]]` | `extern [near] {expr}`
+/// ```
+///
+/// Statements are `;`-separated (a trailing `;` is allowed). `integer` is a
+/// decimal/`0x`/`0o`/`0b` literal, signed with a leading `-`, `register` is a
+/// portable vreg (`t0`, `sp`, ...) or a bare physical name, `{expr}` splices a
+/// Rust value (`VReg`, `Gpr`, `Fpr`, `Mem`, `Label`, integer). In a memory
+/// operand the base and index are registers or `{expr}`, the displacement an
+/// integer or `{expr}`, and the scale `1`, `2`, `4`, or `8`.
+///
+/// Names bound by `=>`, `extern`, and `#[patch]` are declared after the macro,
+/// so they stay usable afterwards. See the crate-level documentation of
+/// [onlineasm_macros] for the full rules.
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use onlineasm::{onlineasm, Assembler};
+///
+/// let mut asm = Assembler::native();
+/// onlineasm!(asm;
+///     =>add;
+///     move t0, 41;
+///     addi t0, 1;
+///     ret;
+/// );
+/// let code = asm.finish()?;
+/// assert!(code.offset(add).is_some());
+/// # Ok(())
+/// # }
+/// ```
 pub use onlineasm_macros::onlineasm;
 pub use regs::{RegInfo, RegKind, VReg};
 
@@ -800,17 +857,70 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
         }
     }
 
-    /// Emits one onlineasm mnemonic and returns its patch handle.
+    /// Emits one onlineasm mnemonic through a patchable site and returns its
+    /// patch handle.
+    ///
+    /// The macro form is `#[patch = name]` on the instruction. Patchable
+    /// instructions and the handle each yields:
+    ///
+    /// * `jmp`/`call` with a label target: a [`PatchHandle::Jump`], retargeted
+    ///   with [`asmkit::repatch_jump_span`] or [`asmkit::repatch_jump_span_mt_safe`]. Register, memory, absolute, and
+    ///   external targets are not patchable (absolute ones use
+    ///   `#[patch_abs = name]` instead; see below).
+    /// * `move` with a register destination and an immediate source: a
+    ///   [`PatchHandle::Data`], rewritten with [`repatch_u64`].
+    /// * Conditional branches (integer `bqeq`/`bieq`/..., test `btqz`/...,
+    ///   flag `bo`/`bs`/`bz`/`bnz`, arithmetic `baddqo`/..., float
+    ///   `bdeq`/...): a [`PatchHandle::Jump`]. Float conditions that expand to
+    ///   several branches are not patchable (which ones depends on the
+    ///   target), and neither is the overflow-of-`or` arithmetic branch
+    ///   (`borio`/`borqo`), which emits no branch at all.
+    ///
+    /// An external symbol is never a patch site, whatever the mnemonic.
+    /// Anything else fails with [`LowerError::NotPatchable`].
+    ///
+    /// `#[patch_abs = name]` (macro only) applies to `jmp`/`call` with an
+    /// integer or `{expr}` target. It emits a patchable `move` of the target
+    /// into the expansion scratch GPR followed by an indirect jump/call
+    /// through it, and binds the `move`'s [`PatchHandle::Data`]: fill it with
+    /// the callee's absolute address via [`repatch_u64`]. The scratch GPR
+    /// (`r11`/`x16`/`x31`) is clobbered, as for any expansion using it.
     ///
     /// On a [`BackwardAssembler`] the call is recorded and the returned
     /// handle is virtual until [`finish`](Assembler::finish) replays the
-    /// tape; resolve it with [`Finished::location`] afterwards.
+    /// tape, resolve it with [`Finished::location`] afterwards.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use onlineasm::{onlineasm, Assembler, JitAllocator, PatchLocation};
+    ///
+    /// let mut asm = Assembler::native();
+    /// onlineasm!(asm;
+    ///     #[patch = slot] move t0, 0;
+    ///     ret;
+    /// );
+    /// let code = asm.finish()?;
+    /// let location = code.location(slot).ok_or("slot is unbound")?;
+    /// 
+    /// let mut jit = JitAllocator::new(Default::default());
+    /// let mut span = code.allocate(&mut jit)?;
+    /// // SAFETY: `span` holds `code`, and nothing executes the patched
+    /// // instruction while it is rewritten.
+    /// unsafe { onlineasm::repatch_u64(&mut jit, &mut span, &location, 42)? };
+    /// let f: extern "C" fn() -> u64 = unsafe { std::mem::transmute(span.rx()) };
+    /// assert_eq!(f(), 42);
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if the mnemonic is offlineasm-only, lowering fails,
-    /// or the mnemonic is not patchable. On a [`BackwardAssembler`],
-    /// lowering failures surface at [`finish`](Assembler::finish) instead.
+    /// or the mnemonic (or its operand shape) is not patchable. On a
+    /// [`BackwardAssembler`], lowering failures surface at
+    /// [`finish`](Assembler::finish) instead.
     pub fn emit_patched(
         &mut self,
         mnemonic: Mnemonic,
@@ -1022,9 +1132,17 @@ pub struct Finished {
 /// Where a [`PatchHandle`] is in a [`Finished`] image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatchLocation {
-    /// A jump or call, retargeted with [`asmkit::repatch_jump_span`].
+    /// A jump or call (`#[patch]` on `jmp`/`call`/branches), retargeted with
+    /// [`asmkit::repatch_jump_span`] to an absolute address. The new target
+    /// must be within the jump's range, anything further fails with [`AsmError::TooLarge`]. To patch
+    /// before allocating, apply [`asmkit::repatch_jump`] to a copy of
+    /// [`Finished::data`] with a [`Finished::offset`] target instead.
     Jump(CodeLocationJump),
-    /// An immediate, rewritten with [`repatch_u64`].
+    /// A 64-bit immediate (`#[patch]` on `move`, or the address slot of
+    /// `#[patch_abs]` on `jmp`/`call`), rewritten with [`repatch_u64`]. To
+    /// patch before allocating, apply [`asmkit::repatch_value`] to a copy of
+    /// [`Finished::data`], and read the current value back with
+    /// [`asmkit::read_value`].
     Data(CodeLocationData),
 }
 
@@ -1044,8 +1162,13 @@ impl Finished {
     }
 
     /// Returns where a [`PatchHandle`] returned while assembling
-    /// (`#[patch = h]` or [`Assembler::emit_patched`]) is in this image, or
-    /// `None` for a linked image, whose handles are not preserved.
+    /// (`#[patch = h]` or [`Assembler::emit_patched`]) is in this image.
+    ///
+    /// Returns `None` for a linked image ([`Finished::link`] drops every
+    /// handle), or for a backward-assembler handle this image does not know.
+    /// A forward handle from another image is not detected: it maps to a
+    /// meaningless offset, so only pass handles this image's assembler
+    /// returned.
     pub fn location(&self, handle: PatchHandle) -> Option<PatchLocation> {
         if self.linked {
             return None;
@@ -1130,7 +1253,10 @@ impl Finished {
     }
 }
 
-/// Writes `value` into the immediate at `location`.
+/// Writes `value` into the immediate at `location` in loaded code.
+///
+/// `location` is the [`PatchLocation::Data`] of a `#[patch]`ed `move` or a
+/// `#[patch_abs]` address slot (see [`Assembler::emit_patched`]). 
 ///
 /// # Errors
 ///

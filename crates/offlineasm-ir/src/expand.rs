@@ -140,8 +140,6 @@ fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Vec<Inst>> {
 }
 
 /// Returns the patch shape for `mn`.
-///
-/// Returns `None` for mnemonics that cannot be patch sites.
 pub fn patch_kind(mn: Mnemonic) -> Option<PatchKind> {
     Some(match mn {
         Mnemonic::Jmp => PatchKind::JumpSite,
@@ -158,15 +156,19 @@ pub fn patch_kind(mn: Mnemonic) -> Option<PatchKind> {
 }
 
 /// Describes what a `#[patch]` site patches.
+///
+/// Jump shapes become jump handles (in onlineasm, retargeted after
+/// emission); [`MovBlock`](PatchKind::MovBlock) becomes a 64-bit immediate
+/// slot (rewritten after emission).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PatchKind {
-    /// Patches an unconditional jump target.
+    /// Patches an unconditional jump target (`jmp` to a label).
     JumpSite,
-    /// Patches a conditional branch target.
+    /// Patches a conditional branch target (a single-branch expansion).
     CondJumpSite,
-    /// Patches a call target.
+    /// Patches a call target (`call` to a label).
     CallSite,
-    /// Patches a 64-bit move slot.
+    /// Patches a 64-bit move slot (`move` of an immediate into a register).
     MovBlock,
 }
 
