@@ -2266,7 +2266,7 @@ pub fn emit(ctx: &mut LowerCtx, inst: &Inst) -> Result<(), String> {
             args,
             target,
             ..
-        } => op_branch(ctx, *op, *w, *flag, args, *target),
+        } => op_branch(ctx, *op, *w, *flag, args.as_slice(), *target),
         Inst::FlagBranch { flag, target, .. } => {
             let label = text::label_text(ctx, *target)?;
             ctx.emitter.puts(&format!("b.{} {}", flag_cc(*flag), label));

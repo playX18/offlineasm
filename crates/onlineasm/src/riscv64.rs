@@ -3730,7 +3730,7 @@ impl Lx<'_, '_, '_> {
                 args,
                 target,
                 patch,
-            } => self.e_opbranch(*op, *w, *flag, args, *target, *patch),
+            } => self.e_opbranch(*op, *w, *flag, args.as_slice(), *target, *patch),
             Inst::FlagBranch {
                 flag,
                 target,

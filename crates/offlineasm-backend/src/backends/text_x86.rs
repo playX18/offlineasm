@@ -399,7 +399,7 @@ pub fn emit(ctx: &mut LowerCtx, inst: &Inst) -> Result<(), String> {
             target,
             patch: _,
         } => {
-            op_branch(ctx, *op, *w, *flag, args)?;
+            op_branch(ctx, *op, *w, *flag, args.as_slice())?;
             let label = text::label_text(ctx, *target)?;
             puts(ctx, &format!("{} {}", flag_jcc(*flag), label));
             Ok(())

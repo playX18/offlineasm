@@ -1,4 +1,5 @@
 use crate::{Assembler, IntoOperand, Op};
+use smallvec::SmallVec;
 
 macro_rules! mnemonic_methods {
     // The doc for one typed method is an `Emit` line plus the mnemonic's
@@ -34,7 +35,8 @@ macro_rules! mnemonic_methods {
             #[doc = ""]
             #[doc = include_str!(concat!(env!("OUT_DIR"), "/method-docs/", $vmn, ".md"))]
             pub fn $vname(&mut self, ops: &[impl IntoOperand + Copy]) -> &mut Self {
-                let resolved: Vec<Op> = ops.iter().map(|o| o.into_operand(self)).collect();
+                let resolved: SmallVec<[Op; 4]> =
+                    ops.iter().map(|o| o.into_operand(self)).collect();
                 self.emit_checked(crate::mnem::$vname, &resolved);
                 self
             })*

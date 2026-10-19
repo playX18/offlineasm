@@ -1,6 +1,6 @@
 [package]
 name = "onlineasm"
-version = "0.3.1"
+version.workspace = true
 edition = "2021"
 description = "Minimal portable runtime assembler with offlineasm mnemonics"
 license = "BSD-3-Clause"
@@ -15,6 +15,7 @@ include = [
     "/src/**/*",
     "/examples/**/*",
     "/tests/**/*",
+    "/benches/**/*",
     "/docs/**/*",
     "/build.rs",
     "/README.md",
@@ -27,12 +28,18 @@ path = "src/lib.rs"
 
 [dependencies]
 asmkit-rs = { version = "0.7.2", features = ["x86", "aarch64", "riscv", "jit"] }
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.3.1" }
-onlineasm-macros = { path = "../onlineasm-macros", version = "0.3.1" }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.3.2" }
+onlineasm-macros = { path = "../onlineasm-macros", version = "0.3.2" }
+smallvec = "1"
 
 [dev-dependencies]
 capstone = "0.14"
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.1" }
+criterion = "0.5"
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.2" }
+
+[[bench]]
+name = "emit_mix"
+harness = false
 
 [build-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.1" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.2" }

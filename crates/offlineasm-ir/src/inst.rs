@@ -32,6 +32,45 @@ impl Alu3 {
     }
 }
 
+/// Fixed-size leading operands for [`Inst::OpBranch`]: `[rhs, dst]` or
+/// `[lhs, rhs, dst]`.
+///
+/// Op-branch expansions take at most 3 leading operands, so the inline array
+/// always fits: unlike `Vec<Op>` this performs no heap allocation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BranchArgs {
+    ops: [Op; 3],
+    len: u8,
+}
+
+impl BranchArgs {
+    /// Builds the 2-operand form (`[rhs, dst]`).
+    pub fn two(rhs: Op, dst: Op) -> Self {
+        Self {
+            ops: [rhs, dst, Op::Imm(0)],
+            len: 2,
+        }
+    }
+
+    /// Builds the 3-operand form (`[lhs, rhs, dst]`).
+    pub fn three(lhs: Op, rhs: Op, dst: Op) -> Self {
+        Self {
+            ops: [lhs, rhs, dst],
+            len: 3,
+        }
+    }
+
+    /// Returns the operands as a slice.
+    pub fn as_slice(&self) -> &[Op] {
+        &self.ops[..self.len as usize]
+    }
+
+    /// Returns the operands as a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [Op] {
+        &mut self.ops[..self.len as usize]
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Inst {
     Mov {
@@ -268,7 +307,7 @@ pub enum Inst {
         op: FlagAlu,
         w: Width,
         flag: PredFlag,
-        args: Vec<Op>,
+        args: BranchArgs,
         target: Lbl,
         patch: bool,
     },
@@ -786,7 +825,7 @@ impl Inst {
                 f(*target);
             }
             Inst::OpBranch { args, target, .. } => {
-                visit_ops(f, args);
+                visit_ops(f, args.as_slice());
                 f(*target);
             }
             Inst::FlagBranch { target, .. } => f(*target),

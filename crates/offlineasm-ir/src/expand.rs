@@ -3,6 +3,15 @@
 use super::inst::*;
 use super::mnemonic::Mnemonic;
 use super::*;
+use smallvec::{smallvec, SmallVec};
+
+/// Inline capacity of an [`Expansion`].
+///
+/// ~97% of mnemonic expansions hold 2 or fewer nodes
+pub const EXPANSION_INLINE: usize = 2;
+
+/// The lowered instruction sequence for one mnemonic invocation.
+pub type Expansion = SmallVec<[Inst; EXPANSION_INLINE]>;
 
 /// Lowers one mnemonic invocation to the [`Inst`] sequence that implements it.
 ///
@@ -24,7 +33,7 @@ pub fn expand(
     ops: &[Op],
     sc: &Scratch,
     patch: bool,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     if patch && patch_kind(mn).is_none() {
         return Err(ExpandError::NotPatchable(mn.as_str().to_string()));
     }
@@ -78,9 +87,9 @@ fn check_extern_operands(mn: Mnemonic, ops: &[Op], patch: bool) -> Result<(), Ex
 /// The oracle interprets this same sequence, and scratch is clobberable by
 /// design (it is never in the portable register pool, so it cannot alias
 /// `dst` or the operand bases).
-fn stage_aliasing_mem(insts: &mut Vec<Inst>, sc: &Scratch) {
+fn stage_aliasing_mem(insts: &mut Expansion, sc: &Scratch) {
     let old = std::mem::take(insts);
-    let mut out = Vec::with_capacity(old.len() + 2);
+    let mut out = Expansion::new();
     for mut inst in old {
         let loads = stage_one(&mut inst, sc);
         if let Some(loads) = loads {
@@ -94,7 +103,7 @@ fn stage_aliasing_mem(insts: &mut Vec<Inst>, sc: &Scratch) {
 /// Collects the staging loads for `inst` and rewrites its aliased operands.
 ///
 /// Returns `None` when `inst` needs no staging.
-fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Vec<Inst>> {
+fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Expansion> {
     let (w, operands, dst) = match inst {
         Inst::Add { w, op }
         | Inst::Sub { w, op }
@@ -104,7 +113,7 @@ fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Vec<Inst>> {
         | Inst::Xor { w, op } => (*w, vec![&mut op.lhs, &mut op.rhs], &mut op.dst),
         Inst::AluS { w, alu, .. } => (*w, vec![&mut alu.lhs, &mut alu.rhs], &mut alu.dst),
         Inst::OpBranch { w, args, .. } => {
-            let (last, init) = args.split_last_mut()?;
+            let (last, init) = args.as_mut_slice().split_last_mut()?;
             (*w, init.iter_mut().collect(), last)
         }
         _ => return None,
@@ -113,7 +122,7 @@ fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Vec<Inst>> {
         return None;
     };
     let slots = [sc.gpr, sc.gpr2];
-    let mut loads = Vec::new();
+    let mut loads = Expansion::new();
     let mut slot = 0usize;
     for operand in operands {
         let Op::Mem(m) = operand else {
@@ -189,12 +198,12 @@ fn test_set_node(
     ops: &[Op],
     w: Width,
     test: TestKind,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     if ops.len() != 2 && ops.len() != 3 {
         return Err(bad(mn, "test-set takes 2 or 3 operands"));
     }
     let mask = if ops.len() == 3 { Some(ops[2]) } else { None };
-    Ok(vec![Inst::TestSet {
+    Ok(smallvec![Inst::TestSet {
         w,
         value: ops[1],
         mask,
@@ -209,7 +218,7 @@ fn test_branch_node(
     w: Width,
     test: TestKind,
     patch: bool,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     if ops.len() != 2 && ops.len() != 3 {
         return Err(bad(mn, "test-branch takes 2 or 3 operands"));
     }
@@ -219,7 +228,7 @@ fn test_branch_node(
         ops.last()
             .ok_or_else(|| bad(mn, "test-branch takes 2 or 3 operands"))?,
     )?;
-    Ok(vec![Inst::TestBranch {
+    Ok(smallvec![Inst::TestBranch {
         w,
         value: ops[0],
         mask,
@@ -235,13 +244,13 @@ fn div_rem_node(
     signed: bool,
     w: Width,
     rem: bool,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     let (dvd, dvs, dst) = match ops {
         [dst, dvs] => (*dst, *dvs, gpr_op(mn, dst)?),
         [dst, dvd, dvs] => (*dvd, *dvs, gpr_op(mn, dst)?),
         _ => return Err(bad(mn, "divide takes 2 or 3 operands")),
     };
-    Ok(vec![if rem {
+    Ok(smallvec![if rem {
         Inst::Rem3 {
             signed,
             w,
@@ -267,13 +276,13 @@ fn shift_mem_canon(
     cnt: &Op,
     dst: &Mem,
     sc: &Scratch,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     let shift_cnt = match cnt {
         Op::Imm(v) => ShiftCnt::Imm(*v),
         Op::Gpr(g) => ShiftCnt::Reg(*g),
         _ => return Err(bad(mn, "shift count must be an immediate or register")),
     };
-    Ok(vec![
+    Ok(smallvec![
         Inst::Load {
             w,
             sx: Sx::Zero,
@@ -301,7 +310,7 @@ fn shift_node(
     op: ShiftOp,
     ops: &[Op],
     sc: &Scratch,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     if ops.len() != 2 {
         return Err(bad(mn, "shift takes 2 operands"));
     }
@@ -314,17 +323,17 @@ fn shift_node(
         Op::Gpr(g) => ShiftCnt::Reg(*g),
         _ => return Err(bad(mn, "shift count must be an immediate or register")),
     };
-    Ok(vec![Inst::Shift { w, op, dst, cnt }])
+    Ok(smallvec![Inst::Shift { w, op, dst, cnt }])
 }
 
 fn alu3(mn: Mnemonic, ops: &[Op]) -> Result<Alu3, ExpandError> {
     Alu3::from_operands(mn, ops)
 }
 
-fn op_branch_args(mn: Mnemonic, ops: &[Op]) -> Result<Vec<Op>, ExpandError> {
+fn op_branch_args(mn: Mnemonic, ops: &[Op]) -> Result<BranchArgs, ExpandError> {
     match ops {
-        [dst, rhs] => Ok(vec![*rhs, *dst]),
-        [dst, lhs, rhs] => Ok(vec![*lhs, *rhs, *dst]),
+        [dst, rhs] => Ok(BranchArgs::two(*rhs, *dst)),
+        [dst, lhs, rhs] => Ok(BranchArgs::three(*lhs, *rhs, *dst)),
         _ => Err(bad(mn, "op-branch takes 3 or 4 operands")),
     }
 }
@@ -349,77 +358,77 @@ fn expand_inner(
     ops: &[Op],
     sc: &Scratch,
     patch: bool,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     let one = |mn: Mnemonic, ops: &[Op]| -> Result<Op, ExpandError> {
         expect_len(mn, ops, 1)?;
         Ok(ops[0])
     };
     match mn {
-        Mnemonic::Move => Ok(vec![mov_node(mn, ops, Width::B64, patch)?]),
-        Mnemonic::Load(w) => Ok(vec![mov_node(mn, ops, w, patch)?]),
-        Mnemonic::AtomicLoad(w) => Ok(vec![atomic_load_node(mn, ops, w)?]),
-        Mnemonic::Store(w) => Ok(vec![store_node(mn, ops, w)?]),
-        Mnemonic::Extend { from, to, sx } => Ok(vec![extend_node(mn, ops, from, to, sx)?]),
-        Mnemonic::MovZero32 => Ok(vec![movzero_node(mn, ops)?]),
+        Mnemonic::Move => Ok(smallvec![mov_node(mn, ops, Width::B64, patch)?]),
+        Mnemonic::Load(w) => Ok(smallvec![mov_node(mn, ops, w, patch)?]),
+        Mnemonic::AtomicLoad(w) => Ok(smallvec![atomic_load_node(mn, ops, w)?]),
+        Mnemonic::Store(w) => Ok(smallvec![store_node(mn, ops, w)?]),
+        Mnemonic::Extend { from, to, sx } => Ok(smallvec![extend_node(mn, ops, from, to, sx)?]),
+        Mnemonic::MovZero32 => Ok(smallvec![movzero_node(mn, ops)?]),
         Mnemonic::Transfer(w) => transfer_node(mn, ops, sc, w),
-        Mnemonic::FMove(k) => Ok(vec![fmove_node(mn, ops, k)?]),
-        Mnemonic::VMove { store } => Ok(vec![vmove_node(mn, ops, store)?]),
-        Mnemonic::Lea { w, .. } => Ok(vec![lea_node(mn, ops, w)?]),
+        Mnemonic::FMove(k) => Ok(smallvec![fmove_node(mn, ops, k)?]),
+        Mnemonic::VMove { store } => Ok(smallvec![vmove_node(mn, ops, store)?]),
+        Mnemonic::Lea { w, .. } => Ok(smallvec![lea_node(mn, ops, w)?]),
         Mnemonic::LoadQInc => loadqinc_node(mn, ops),
-        Mnemonic::LoadPair(w) => Ok(vec![pair_node(mn, ops, w, true)?]),
-        Mnemonic::StorePair(w) => Ok(vec![pair_node(mn, ops, w, false)?]),
+        Mnemonic::LoadPair(w) => Ok(smallvec![pair_node(mn, ops, w, true)?]),
+        Mnemonic::StorePair(w) => Ok(smallvec![pair_node(mn, ops, w, false)?]),
         Mnemonic::Push => stack_nodes(mn, ops, true, false),
         Mnemonic::Pop => stack_nodes(mn, ops, false, false),
         Mnemonic::PushV => stack_nodes(mn, ops, true, true),
         Mnemonic::PopV => stack_nodes(mn, ops, false, true),
         Mnemonic::PushCalleeSaves => stack_nodes(mn, ops, true, false),
         Mnemonic::PopCalleeSaves => stack_nodes(mn, ops, false, false),
-        Mnemonic::Peek => Ok(vec![peek_node(mn, ops, true)?]),
-        Mnemonic::Poke => Ok(vec![peek_node(mn, ops, false)?]),
-        Mnemonic::TlsLoad(w) => Ok(vec![tls_node(mn, ops, w, true)?]),
-        Mnemonic::TlsStore(w) => Ok(vec![tls_node(mn, ops, w, false)?]),
-        Mnemonic::TlsLea => Ok(vec![tls_lea_node(mn, ops)?]),
+        Mnemonic::Peek => Ok(smallvec![peek_node(mn, ops, true)?]),
+        Mnemonic::Poke => Ok(smallvec![peek_node(mn, ops, false)?]),
+        Mnemonic::TlsLoad(w) => Ok(smallvec![tls_node(mn, ops, w, true)?]),
+        Mnemonic::TlsStore(w) => Ok(smallvec![tls_node(mn, ops, w, false)?]),
+        Mnemonic::TlsLea => Ok(smallvec![tls_lea_node(mn, ops)?]),
 
-        Mnemonic::Add(w) => Ok(vec![Inst::Add {
+        Mnemonic::Add(w) => Ok(smallvec![Inst::Add {
             w,
             op: alu3(mn, ops)?,
         }]),
-        Mnemonic::Sub(w) => Ok(vec![Inst::Sub {
+        Mnemonic::Sub(w) => Ok(smallvec![Inst::Sub {
             w,
             op: alu3(mn, ops)?,
         }]),
-        Mnemonic::Mul(w) => Ok(vec![mul_node(mn, w, ops)?]),
-        Mnemonic::And(w) => Ok(vec![Inst::And {
+        Mnemonic::Mul(w) => Ok(smallvec![mul_node(mn, w, ops)?]),
+        Mnemonic::And(w) => Ok(smallvec![Inst::And {
             w,
             op: alu3(mn, ops)?,
         }]),
-        Mnemonic::Or(w) => Ok(vec![Inst::Or {
+        Mnemonic::Or(w) => Ok(smallvec![Inst::Or {
             w,
             op: alu3(mn, ops)?,
         }]),
-        Mnemonic::Xor(w) => Ok(vec![Inst::Xor {
+        Mnemonic::Xor(w) => Ok(smallvec![Inst::Xor {
             w,
             op: alu3(mn, ops)?,
         }]),
         Mnemonic::FBit { or, k } => fbit_node(mn, ops, k, or),
-        Mnemonic::Not(w) => Ok(vec![Inst::Not {
+        Mnemonic::Not(w) => Ok(smallvec![Inst::Not {
             w,
             dst: one(mn, ops)?,
         }]),
-        Mnemonic::Neg(w) => Ok(vec![Inst::Neg {
+        Mnemonic::Neg(w) => Ok(smallvec![Inst::Neg {
             w,
             dst: one(mn, ops)?,
         }]),
         Mnemonic::Shift { w, op } => shift_node(mn, w, op, ops, sc),
-        Mnemonic::Bswap(w) => Ok(vec![bswap_node(mn, ops, w)?]),
-        Mnemonic::Adc => Ok(vec![adc_node(mn, ops, false)?]),
-        Mnemonic::Sbb => Ok(vec![adc_node(mn, ops, true)?]),
-        Mnemonic::MulHigh { signed } => Ok(vec![Inst::MulHigh {
+        Mnemonic::Bswap(w) => Ok(smallvec![bswap_node(mn, ops, w)?]),
+        Mnemonic::Adc => Ok(smallvec![adc_node(mn, ops, false)?]),
+        Mnemonic::Sbb => Ok(smallvec![adc_node(mn, ops, true)?]),
+        Mnemonic::MulHigh { signed } => Ok(smallvec![Inst::MulHigh {
             signed,
             rhs: one(mn, ops)?,
         }]),
-        Mnemonic::MulWide { signed } => Ok(vec![mulwide_node(mn, ops, signed)?]),
-        Mnemonic::AluS { op, w } => Ok(vec![Inst::AluS {
+        Mnemonic::MulWide { signed } => Ok(smallvec![mulwide_node(mn, ops, signed)?]),
+        Mnemonic::AluS { op, w } => Ok(smallvec![Inst::AluS {
             op,
             w,
             alu: alu3(mn, ops)?,
@@ -433,7 +442,7 @@ fn expand_inner(
                     AluOp::Sub => FlagAlu::Sub,
                     AluOp::Or => FlagAlu::Or,
                 };
-                return Ok(vec![Inst::OpBranch {
+                return Ok(smallvec![Inst::OpBranch {
                     op: flag_op,
                     w,
                     flag: PredFlag::S,
@@ -446,15 +455,15 @@ fn expand_inner(
                     patch,
                 }]);
             }
-            Ok(vec![Inst::AluS {
+            Ok(smallvec![Inst::AluS {
                 op,
                 w,
                 alu: alu3(mn, ops)?,
             }])
         }
-        Mnemonic::AddShifted => Ok(vec![addshifted_node(mn, ops)?]),
-        Mnemonic::Cqo { quad } => Ok(vec![Inst::Cqo { quad }]),
-        Mnemonic::DivMod1 { signed, w } => Ok(vec![Inst::DivMod1 {
+        Mnemonic::AddShifted => Ok(smallvec![addshifted_node(mn, ops)?]),
+        Mnemonic::Cqo { quad } => Ok(smallvec![Inst::Cqo { quad }]),
+        Mnemonic::DivMod1 { signed, w } => Ok(smallvec![Inst::DivMod1 {
             signed,
             w,
             divisor: one(mn, ops)?,
@@ -463,7 +472,7 @@ fn expand_inner(
         Mnemonic::Rem { signed, w } => div_rem_node(mn, ops, signed, w, true),
         Mnemonic::IntSet { w, cc } => {
             expect_len(mn, ops, 3)?;
-            Ok(vec![Inst::IntSet {
+            Ok(smallvec![Inst::IntSet {
                 cc,
                 w,
                 dst: ops[0],
@@ -472,13 +481,13 @@ fn expand_inner(
             }])
         }
         Mnemonic::TestSet { w, test } => test_set_node(mn, ops, w, test),
-        Mnemonic::Cmov { zero } => Ok(vec![cmov_node(mn, ops, zero)?]),
-        Mnemonic::BitCount { w, trailing } => Ok(vec![cz_node(mn, ops, w, trailing)?]),
-        Mnemonic::Popcnt(w) => Ok(vec![popcnt_node(mn, ops, w)?]),
+        Mnemonic::Cmov { zero } => Ok(smallvec![cmov_node(mn, ops, zero)?]),
+        Mnemonic::BitCount { w, trailing } => Ok(smallvec![cz_node(mn, ops, w, trailing)?]),
+        Mnemonic::Popcnt(w) => Ok(smallvec![popcnt_node(mn, ops, w)?]),
         Mnemonic::Bfi => bfi_node(mn, ops, sc),
         Mnemonic::IntBranch { w, cc } => {
             expect_len(mn, ops, 3)?;
-            Ok(vec![Inst::Branch {
+            Ok(smallvec![Inst::Branch {
                 cc,
                 w,
                 lhs: ops[0],
@@ -492,7 +501,7 @@ fn expand_inner(
             if ops.len() != 3 && ops.len() != 4 {
                 return Err(bad(mn, "op-branch takes 3 or 4 operands"));
             }
-            Ok(vec![Inst::OpBranch {
+            Ok(smallvec![Inst::OpBranch {
                 op,
                 w,
                 flag,
@@ -505,7 +514,7 @@ fn expand_inner(
                 patch,
             }])
         }
-        Mnemonic::FlagBranch(flag) => Ok(vec![flag_branch_node(mn, ops, flag, patch)?]),
+        Mnemonic::FlagBranch(flag) => Ok(smallvec![flag_branch_node(mn, ops, flag, patch)?]),
         Mnemonic::BranchF { cc, k } => {
             expect_len(mn, ops, 3)?;
             let (cc, reverse) = float_cc(cc);
@@ -514,7 +523,7 @@ fn expand_inner(
             } else {
                 (ops[0], ops[1])
             };
-            Ok(vec![Inst::BranchF {
+            Ok(smallvec![Inst::BranchF {
                 cc,
                 k,
                 lhs,
@@ -525,35 +534,35 @@ fn expand_inner(
         }
         Mnemonic::Jmp => {
             expect_len(mn, ops, 1)?;
-            Ok(vec![Inst::Jump {
+            Ok(smallvec![Inst::Jump {
                 target: jump_target(mn, &ops[0])?,
                 patch,
             }])
         }
         Mnemonic::Call => {
             expect_len(mn, ops, 1)?;
-            Ok(vec![Inst::Call {
+            Ok(smallvec![Inst::Call {
                 target: jump_target(mn, &ops[0])?,
                 patch,
             }])
         }
         Mnemonic::Ret => {
             expect_len(mn, ops, 0)?;
-            Ok(vec![Inst::Ret])
+            Ok(smallvec![Inst::Ret])
         }
         Mnemonic::Break => {
             expect_len(mn, ops, 0)?;
-            Ok(vec![Inst::Break])
+            Ok(smallvec![Inst::Break])
         }
         Mnemonic::Nop => {
             expect_len(mn, ops, 0)?;
-            Ok(vec![Inst::Nop])
+            Ok(smallvec![Inst::Nop])
         }
         Mnemonic::FArith { op, k } => farith_node(mn, ops, k, op),
-        Mnemonic::Fma { op, k } => Ok(vec![fma_node(mn, ops, k, op)?]),
-        Mnemonic::FSqrt(k) => Ok(vec![fsqrt_node(mn, ops, k)?]),
-        Mnemonic::FRound { k, mode } => Ok(vec![fround_node(mn, ops, k, mode)?]),
-        Mnemonic::FAbs { k, negate } => Ok(vec![fabs_node(mn, ops, k, negate)?]),
+        Mnemonic::Fma { op, k } => Ok(smallvec![fma_node(mn, ops, k, op)?]),
+        Mnemonic::FSqrt(k) => Ok(smallvec![fsqrt_node(mn, ops, k)?]),
+        Mnemonic::FRound { k, mode } => Ok(smallvec![fround_node(mn, ops, k, mode)?]),
+        Mnemonic::FAbs { k, negate } => Ok(smallvec![fabs_node(mn, ops, k, negate)?]),
         Mnemonic::FSet { cc, k } => {
             expect_len(mn, ops, 3)?;
             let (cc, reverse) = float_cc(cc);
@@ -562,7 +571,7 @@ fn expand_inner(
             } else {
                 (ops[1], ops[2])
             };
-            Ok(vec![Inst::FSet {
+            Ok(smallvec![Inst::FSet {
                 cc,
                 k,
                 dst: ops[0],
@@ -570,29 +579,29 @@ fn expand_inner(
                 rhs,
             }])
         }
-        Mnemonic::CvtFI { k, w } => Ok(vec![cvtfi_node(mn, ops, k, w)?]),
+        Mnemonic::CvtFI { k, w } => Ok(smallvec![cvtfi_node(mn, ops, k, w)?]),
         Mnemonic::CvtQuad(k) => quad_to_fp(mn, ops, sc, k),
-        Mnemonic::CvtIF { signed, from, k } => Ok(vec![cvtif_node(mn, ops, signed, from, k)?]),
-        Mnemonic::CvtFF { from, to } => Ok(vec![cvtff_node(mn, ops, from, to)?]),
-        Mnemonic::Bitcast(dir) => Ok(vec![bitcast_node(mn, ops, dir)?]),
-        Mnemonic::MovDZ => Ok(vec![movdz_node(mn, ops)?]),
+        Mnemonic::CvtIF { signed, from, k } => Ok(smallvec![cvtif_node(mn, ops, signed, from, k)?]),
+        Mnemonic::CvtFF { from, to } => Ok(smallvec![cvtff_node(mn, ops, from, to)?]),
+        Mnemonic::Bitcast(dir) => Ok(smallvec![bitcast_node(mn, ops, dir)?]),
+        Mnemonic::MovDZ => Ok(smallvec![movdz_node(mn, ops)?]),
         Mnemonic::TruncQSlow(k) => trunc_q_slow(mn, ops, sc, k),
         Mnemonic::Btd2i => btd2i_node(mn, ops),
         Mnemonic::Bcd2i => bcd2i_node(mn, ops, sc),
-        Mnemonic::VecExtract(w) => Ok(vec![umov_node(mn, ops, w)?]),
-        Mnemonic::AtomicRmw { op, w } => Ok(vec![rmw_node(mn, ops, w, op)?]),
+        Mnemonic::VecExtract(w) => Ok(smallvec![umov_node(mn, ops, w)?]),
+        Mnemonic::AtomicRmw { op, w } => Ok(smallvec![rmw_node(mn, ops, w, op)?]),
         Mnemonic::AtomicRmwNot(w) => rmw_not_node(mn, ops, sc, w, AtomicOp::And),
-        Mnemonic::AtomicCas { w, branch } => Ok(vec![cas_node(mn, ops, w, branch)?]),
-        Mnemonic::LoadLinked(w) => Ok(vec![ll_node(mn, ops, w)?]),
-        Mnemonic::StoreCond(w) => Ok(vec![sc_node(mn, ops, w)?]),
-        Mnemonic::Fence { full } => Ok(vec![Inst::Fence { full }]),
-        Mnemonic::Pause => Ok(vec![Inst::Pause]),
+        Mnemonic::AtomicCas { w, branch } => Ok(smallvec![cas_node(mn, ops, w, branch)?]),
+        Mnemonic::LoadLinked(w) => Ok(smallvec![ll_node(mn, ops, w)?]),
+        Mnemonic::StoreCond(w) => Ok(smallvec![sc_node(mn, ops, w)?]),
+        Mnemonic::Fence { full } => Ok(smallvec![Inst::Fence { full }]),
+        Mnemonic::Pause => Ok(smallvec![Inst::Pause]),
         Mnemonic::TagCodePtr
         | Mnemonic::TagReturnAddress
         | Mnemonic::UntagReturnAddress
         | Mnemonic::RemoveCodePtrTag
         | Mnemonic::UntagArrayPtr
-        | Mnemonic::RemoveArrayPtrTag => Ok(vec![]),
+        | Mnemonic::RemoveArrayPtrTag => Ok(smallvec![]),
     }
 }
 
@@ -682,9 +691,9 @@ fn rmw_not_node(
     sc: &Scratch,
     w: Width,
     op: AtomicOp,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 2)?;
-    let mut out = Vec::new();
+    let mut out = Expansion::new();
     // `mem` is ops[0] and `src` is ops[1].
     let a = match &ops[1] {
         Op::Imm(v) => Op::Imm(!v),
@@ -774,7 +783,7 @@ fn sc_node(mn: Mnemonic, ops: &[Op], w: Width) -> Result<Inst, ExpandError> {
 /// Expands `bfiq` to a mask, shift, and OR sequence.
 ///
 /// Computes `dst = (dst & ~mask) | ((src & wmask) << lsb)`.
-fn bfi_node(mn: Mnemonic, ops: &[Op], sc: &Scratch) -> Result<Vec<Inst>, ExpandError> {
+fn bfi_node(mn: Mnemonic, ops: &[Op], sc: &Scratch) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 4)?;
     let lsb = imm_op(mn, &ops[2])?;
     let width = imm_op(mn, &ops[3])?;
@@ -790,7 +799,7 @@ fn bfi_node(mn: Mnemonic, ops: &[Op], sc: &Scratch) -> Result<Vec<Inst>, ExpandE
     let s = sc.gpr;
     let dst = gpr_op(mn, &ops[0])?;
 
-    Ok(vec![
+    Ok(smallvec![
         Inst::Mov {
             w: Width::B64,
             dst: Op::Gpr(s),
@@ -869,12 +878,12 @@ fn slot_disp(mn: Mnemonic, op: &Op) -> Result<i32, ExpandError> {
     Ok(off as i32)
 }
 
-fn loadqinc_node(mn: Mnemonic, ops: &[Op]) -> Result<Vec<Inst>, ExpandError> {
+fn loadqinc_node(mn: Mnemonic, ops: &[Op]) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 3)?;
     let dst = gpr_op(mn, &ops[0])?;
     let base = gpr_op(mn, &ops[1])?;
     let inc = imm_op(mn, &ops[2])?;
-    Ok(vec![
+    Ok(smallvec![
         Inst::Load {
             w: Width::B64,
             sx: Sx::Zero,
@@ -993,9 +1002,9 @@ fn transfer_node(
     ops: &[Op],
     sc: &Scratch,
     w: Width,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 2)?;
-    let mut out = Vec::new();
+    let mut out = Expansion::new();
     match &ops[1] {
         Op::Gpr(_) => {}
         Op::Mem(a) => {
@@ -1139,43 +1148,47 @@ pub fn aligned_push_offset(n: usize, i: usize) -> i32 {
     8 * (n - 1 - i) as i32
 }
 
+/// Lowers one `push`/`pop` operand to its [`Inst`].
+fn push_inst(mn: Mnemonic, op: &Op, push: bool, vector: bool) -> Result<Inst, ExpandError> {
+    if vector {
+        let x = fpr_op(mn, op)?;
+        Ok(if push {
+            Inst::PushV { src: x }
+        } else {
+            Inst::PopV { dst: x }
+        })
+    } else {
+        match op {
+            Op::Gpr(_) | Op::Mem(_) | Op::Imm(_) => Ok(if push {
+                Inst::Push { op: *op }
+            } else {
+                Inst::Pop { op: *op }
+            }),
+            _ => Err(bad(mn, "push/pop needs registers, memory, or immediates")),
+        }
+    }
+}
+
 fn stack_nodes(
     mn: Mnemonic,
     ops: &[Op],
     push: bool,
     vector: bool,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     if ops.is_empty() {
         return Err(bad(mn, "needs at least one operand"));
     }
-    let mut out = Vec::with_capacity(ops.len());
+    let mut out = Expansion::new();
     // `push a, b` stores `a` then `b`, leaving `b` on top; `pop a, b` must
     // unwind LIFO, so it reads `b` before `a` - the reverse of the operand
     // list order that `push` uses.
-    let ordered: Box<dyn Iterator<Item = &Op>> = if push {
-        Box::new(ops.iter())
+    if push {
+        for op in ops {
+            out.push(push_inst(mn, op, true, vector)?);
+        }
     } else {
-        Box::new(ops.iter().rev())
-    };
-    for op in ordered {
-        if vector {
-            let x = fpr_op(mn, op)?;
-            out.push(if push {
-                Inst::PushV { src: x }
-            } else {
-                Inst::PopV { dst: x }
-            });
-        } else {
-            match op {
-                Op::Gpr(_) | Op::Mem(_) | Op::Imm(_) => {
-                    out.push(if push {
-                        Inst::Push { op: *op }
-                    } else {
-                        Inst::Pop { op: *op }
-                    });
-                }
-                _ => return Err(bad(mn, "push/pop needs registers, memory, or immediates")),
-            }
+        for op in ops.iter().rev() {
+            out.push(push_inst(mn, op, false, vector)?);
         }
     }
     Ok(out)
@@ -1246,11 +1259,11 @@ fn adc_node(mn: Mnemonic, ops: &[Op], borrow: bool) -> Result<Inst, ExpandError>
     Ok(inst)
 }
 
-fn fbit_node(mn: Mnemonic, ops: &[Op], k: FKind, or: bool) -> Result<Vec<Inst>, ExpandError> {
+fn fbit_node(mn: Mnemonic, ops: &[Op], k: FKind, or: bool) -> Result<Expansion, ExpandError> {
     if ops.len() != 2 && ops.len() != 3 {
         return Err(bad(mn, "fp bitwise takes 2 or 3 operands"));
     }
-    let mut out = Vec::new();
+    let mut out = Expansion::new();
     let (src, dst) = if ops.len() == 3 {
         let d = fpr_op(mn, &ops[0])?;
         if op_eq(&ops[2], &ops[0]) && !op_eq(&ops[1], &ops[0]) {
@@ -1277,9 +1290,9 @@ fn fbit_node(mn: Mnemonic, ops: &[Op], k: FKind, or: bool) -> Result<Vec<Inst>, 
     Ok(out)
 }
 
-fn farith_node(mn: Mnemonic, ops: &[Op], k: FKind, op: FAlu) -> Result<Vec<Inst>, ExpandError> {
+fn farith_node(mn: Mnemonic, ops: &[Op], k: FKind, op: FAlu) -> Result<Expansion, ExpandError> {
     if ops.len() == 3 {
-        return Ok(vec![Inst::FArith {
+        return Ok(smallvec![Inst::FArith {
             op,
             k,
             arith: FArith3 {
@@ -1289,7 +1302,7 @@ fn farith_node(mn: Mnemonic, ops: &[Op], k: FKind, op: FAlu) -> Result<Vec<Inst>
             },
         }]);
     }
-    Ok(vec![Inst::FArith {
+    Ok(smallvec![Inst::FArith {
         op,
         k,
         arith: FArith3::from_operands(mn, ops)?,
@@ -1422,7 +1435,7 @@ fn trunc_q_slow(
     ops: &[Op],
     sc: &Scratch,
     k: FKind,
-) -> Result<Vec<Inst>, ExpandError> {
+) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 2)?;
     let (dst, src) = (ops[0], ops[1]);
     let slow = Lbl::Fresh(0);
@@ -1434,7 +1447,7 @@ fn trunc_q_slow(
         FKind::F64 => (0xc3e0000000000000u64 as i64, 0x43e0000000000000u64 as i64),
     };
     let dst_gpr = gpr_op(mn, &dst)?;
-    Ok(vec![
+    Ok(smallvec![
         Inst::Mov {
             w: Width::B64,
             dst: gs,
@@ -1517,7 +1530,7 @@ fn trunc_q_slow(
     ])
 }
 
-fn quad_to_fp(mn: Mnemonic, ops: &[Op], sc: &Scratch, k: FKind) -> Result<Vec<Inst>, ExpandError> {
+fn quad_to_fp(mn: Mnemonic, ops: &[Op], sc: &Scratch, k: FKind) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 3)?;
     let (src, dst) = (ops[1], ops[0]);
     let slow = Lbl::Fresh(0);
@@ -1525,7 +1538,7 @@ fn quad_to_fp(mn: Mnemonic, ops: &[Op], sc: &Scratch, k: FKind) -> Result<Vec<In
     let s1 = gpr_op(mn, &ops[2])?;
     let s2 = sc.gpr;
     let dst_fpr = fpr_op(mn, &dst)?;
-    Ok(vec![
+    Ok(smallvec![
         Inst::TestBranch {
             w: Width::B64,
             value: src,
@@ -1603,9 +1616,9 @@ fn quad_to_fp(mn: Mnemonic, ops: &[Op], sc: &Scratch, k: FKind) -> Result<Vec<In
 /// Expands `btd2i` to a convert plus an overflow-sentinel branch.
 ///
 /// Takes the branch when the low 32 bits equal `0x80000000`.
-fn btd2i_node(mn: Mnemonic, ops: &[Op]) -> Result<Vec<Inst>, ExpandError> {
+fn btd2i_node(mn: Mnemonic, ops: &[Op]) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 3)?;
-    Ok(vec![
+    Ok(smallvec![
         Inst::CvtFI {
             k: FKind::F64,
             w: Width::B64,
@@ -1623,10 +1636,10 @@ fn btd2i_node(mn: Mnemonic, ops: &[Op]) -> Result<Vec<Inst>, ExpandError> {
     ])
 }
 
-fn bcd2i_node(mn: Mnemonic, ops: &[Op], sc: &Scratch) -> Result<Vec<Inst>, ExpandError> {
+fn bcd2i_node(mn: Mnemonic, ops: &[Op], sc: &Scratch) -> Result<Expansion, ExpandError> {
     expect_len(mn, ops, 3)?;
     let target = label_op(mn, &ops[2])?;
-    Ok(vec![
+    Ok(smallvec![
         Inst::CvtFI {
             k: FKind::F64,
             w: Width::B64,

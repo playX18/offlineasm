@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 
+
 members = [
     "crates/offlineasm-backend",
     "crates/offlineasm-ir",
@@ -9,3 +10,6 @@ members = [
     "crates/onlineasm",
     "crates/offlineasm",
 ]
+
+[workspace.package]
+version = "0.3.2"

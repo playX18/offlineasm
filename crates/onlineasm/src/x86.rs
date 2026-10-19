@@ -677,7 +677,7 @@ fn emit_inst(
             target,
             patch,
         } => {
-            l.op_branch(*op, *w, *flag, args)?;
+            l.op_branch(*op, *w, *flag, args.as_slice())?;
             Ok(branch_to(l.asm, l.res, Cond::from(*flag), *target, *patch))
         }
         Inst::FlagBranch {

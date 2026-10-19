@@ -1,6 +1,6 @@
 [package]
 name = "offlineasm-ir"
-version = "0.3.1"
+version.workspace = true
 edition = "2021"
 description = "Shared mnemonic IR for the offlineasm and onlineasm assemblers"
 license = "BSD-3-Clause"
@@ -16,3 +16,6 @@ include = ["/src/**/*", "/README.md", "/LICENSE"]
 [lib]
 name = "offlineasm_ir"
 path = "src/lib.rs"
+
+[dependencies]
+smallvec = "1"

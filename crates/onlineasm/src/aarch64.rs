@@ -937,7 +937,7 @@ fn emit_node(l: &mut Lx, inst: &Inst) -> Result<Option<PatchHandle>, LowerError>
             args,
             target,
             patch,
-        } => l.op_branch(*op, *w, *flag, args, *target, *patch),
+        } => l.op_branch(*op, *w, *flag, args.as_slice(), *target, *patch),
         Inst::FlagBranch {
             flag,
             target,

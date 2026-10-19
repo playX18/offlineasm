@@ -5,7 +5,7 @@ The IR shared by `offlineasm` and `onlineasm`. It holds `Inst` and
 `expand`. `expand` lowers one mnemonic invocation to core instructions.
 
 ```text
-spelling --> Mnemonic--> expand() + Ops --> Vec<Inst> --backend--> machine code | asm text
+spelling --> Mnemonic--> expand() + Ops --> Expansion --backend--> machine code | asm text
 ```
 
 `offlineasm` lowers each instruction with `expand` and prints assembly text.

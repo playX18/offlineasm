@@ -2588,7 +2588,7 @@ pub fn emit(ctx: &mut LowerCtx, inst: &Inst) -> Result<(), String> {
             args,
             target,
             patch,
-        } => e_opbranch(ctx, mn, *op, *w, *flag, args, target, *patch),
+        } => e_opbranch(ctx, mn, *op, *w, *flag, args.as_slice(), target, *patch),
         Inst::FlagBranch {
             flag,
             target,

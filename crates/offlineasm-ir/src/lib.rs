@@ -5,7 +5,7 @@
 //! assemblers run the same front half:
 //!
 //! ```text
-//! spelling -`Mnemonic`-> `expand()` + `Op`s -> Vec<`Inst`> -backend-> machine code | asm text
+//! spelling -`Mnemonic`-> `expand()` + `Op`s -> [`Expansion`] -backend-> machine code | asm text
 //! ```
 //!
 //! * [`Mnemonic`] names the *operation*, one variant per operation rather than
@@ -431,8 +431,28 @@ pub mod regs;
 pub mod riscv;
 
 pub use expand::{
-    aligned_push_bytes, aligned_push_offset, check_callee_saved, expand, patch_kind, PatchKind,
+    aligned_push_bytes, aligned_push_offset, check_callee_saved, expand, patch_kind, Expansion,
+    PatchKind,
 };
 pub use inst::*;
 pub use mnemonic::{mnem, LeaForm, Mnemonic, SUPPORTED_MNEMONICS};
 pub use regs::{RegInfo, RegKind, TargetRegs, VReg, TARGETS};
+
+// Layout budget: emission keeps one expansion inline on the stack, so the IR
+// node types must stay small. These fire at compile time when a change grows
+// past what `Expansion` was sized for; grow `EXPANSION_INLINE` or accept the
+// spill consciously instead of deleting them.
+const _: () = {
+    assert!(
+        core::mem::size_of::<Op>() <= 16,
+        "Op grew past the 16-byte inline budget"
+    );
+    assert!(
+        core::mem::size_of::<Inst>() <= 72,
+        "Inst grew past the 72-byte inline budget"
+    );
+    assert!(
+        core::mem::size_of::<BranchArgs>() <= 56,
+        "BranchArgs grew past the 56-byte inline budget"
+    );
+};
