@@ -2,7 +2,7 @@ use super::text::{self, sym_text};
 use super::LowerCtx;
 use offlineasm_ir::{
     op_eq, Alu3, AluOp, AtomicOp, BitcastDir, Disp, Extern, FAlu, FArith3, FCc, FKind, FlagAlu,
-    FmaOp, Fpr, Gpr, Inst, IntCc, LeaSrc, Mem, Op, PairW, PredFlag, Reach, RoundMode, Scratch,
+    FmaOp, Fpr, Gpr, Inst, IntCc, Lbl, LeaSrc, Mem, Op, PairW, PredFlag, Reach, RoundMode, Scratch,
     ShiftCnt, ShiftOp, Sx, Target, TestKind, Width,
 };
 
@@ -172,6 +172,7 @@ fn direct_addr(ctx: &LowerCtx, a: &Mem) -> Result<Option<String>, String> {
         Disp::Const(v) if fits_d12(v) => Ok(Some(format!("{}({})", v, gpr(base)))),
         Disp::Const(_) => Ok(None),
         Disp::Sym(s) => Ok(Some(format!("{}({})", sym_text(ctx, s)?, gpr(base)))),
+        Disp::Label(_) | Disp::LabelFar(_) => Ok(None),
     }
 }
 
@@ -183,6 +184,10 @@ fn addr_scratch(ctx: &mut LowerCtx, mn: &str, a: &Mem, tmp: Gpr) -> Result<(), S
             match a.disp {
                 Disp::Const(v) => mov_imm(ctx, tmp, v as i64),
                 Disp::Sym(s) => mov_imm_sym(ctx, tmp, s)?,
+                Disp::Label(l) | Disp::LabelFar(l) => {
+                    let text = text::label_text(ctx, Lbl::Bound(l))?;
+                    ins!(ctx, "la {}, {}", gpr(tmp), text);
+                }
             }
             (tmp, Disp::Const(0))
         }
@@ -199,6 +204,9 @@ fn addr_scratch(ctx: &mut LowerCtx, mn: &str, a: &Mem, tmp: Gpr) -> Result<(), S
             Disp::Sym(s) => {
                 mov_imm_sym(ctx, tmp, s)?;
                 ins!(ctx, "add {}, {}, {}", gpr(tmp), gpr(tmp), gpr(base));
+            }
+            Disp::Label(_) | Disp::LabelFar(_) => {
+                return Err("riscv64: a label-addressed memory operand has no base".to_string())
             }
         },
         Some((idx, scale)) => {

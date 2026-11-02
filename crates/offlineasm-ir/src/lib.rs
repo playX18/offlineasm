@@ -121,13 +121,24 @@ pub enum Lbl {
     Fresh(u32),
 }
 
-/// Holds a memory displacement: a folded constant or a frontend-owned symbol.
+/// Holds a memory displacement: a folded constant, a frontend-owned symbol,
+/// or the address of a code label.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Disp {
     Const(i32),
     /// Holds `{IDENT}` in the `offlineasm` text template. `onlineasm` and
     /// RISC-style backends that must fold it reject this variant.
     Sym(SymId),
+    /// Addresses the memory at the label's address, PC-relatively. On x86-64
+    /// this is `[rip + disp32]`; on AArch64 it is the closest form, an
+    /// `ldr`/`ldrsw` literal (`A64Ldr19`, ±1 MiB). Only valid with no base
+    /// and no index. A label is never a displacement on its own: use
+    /// [`Mem::label`].
+    Label(Label),
+    /// Like [`Disp::Label`], but asks for the page-pair form on AArch64
+    /// (`adrp` + `ldr`/`str` low-12, ±4 GiB) instead of a literal load.
+    /// x86-64 lowers it exactly like [`Disp::Label`].
+    LabelFar(Label),
 }
 
 impl Disp {
@@ -135,7 +146,7 @@ impl Disp {
     pub const fn constant(self) -> Option<i32> {
         match self {
             Disp::Const(v) => Some(v),
-            Disp::Sym(_) => None,
+            Disp::Sym(_) | Disp::Label(_) | Disp::LabelFar(_) => None,
         }
     }
 
@@ -145,7 +156,15 @@ impl Disp {
     pub const fn const_or_zero(self) -> i32 {
         match self {
             Disp::Const(v) => v,
-            Disp::Sym(_) => 0,
+            Disp::Sym(_) | Disp::Label(_) | Disp::LabelFar(_) => 0,
+        }
+    }
+
+    /// Returns the label this displacement addresses, if any.
+    pub const fn label(self) -> Option<Label> {
+        match self {
+            Disp::Label(l) | Disp::LabelFar(l) => Some(l),
+            Disp::Const(_) | Disp::Sym(_) => None,
         }
     }
 }
@@ -182,6 +201,18 @@ impl Mem {
             index: None,
             disp,
         }
+    }
+
+    /// Builds the memory at `label`'s address, PC-relatively (see
+    /// [`Disp::Label`]).
+    pub fn label(label: Label) -> Self {
+        Self::absolute(Disp::Label(label))
+    }
+
+    /// Builds the memory at `label`'s address using the long-range page-pair
+    /// form on AArch64 (see [`Disp::LabelFar`]).
+    pub fn label_far(label: Label) -> Self {
+        Self::absolute(Disp::LabelFar(label))
     }
 
     /// Returns the base register, or register 0 for the absolute form.

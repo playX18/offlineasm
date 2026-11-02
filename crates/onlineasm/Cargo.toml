@@ -27,7 +27,7 @@ name = "onlineasm"
 path = "src/lib.rs"
 
 [dependencies]
-asmkit-rs = { version = "0.7.2", features = ["x86", "aarch64", "riscv", "jit"] }
+asmkit-rs = { version = "0.7.6", features = ["x86", "aarch64", "riscv", "jit"] }
 offlineasm-ir = { path = "../offlineasm-ir", version = "0.3.2" }
 onlineasm-macros = { path = "../onlineasm-macros", version = "0.3.2" }
 smallvec = "1"

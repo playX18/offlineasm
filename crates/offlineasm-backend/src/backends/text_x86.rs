@@ -86,6 +86,7 @@ fn mem_text(ctx: &LowerCtx, m: &Mem, size: Option<&str>, extra: i64) -> Result<S
             terms.push(format!("{}*{}", index, scale));
         }
     }
+    let mut label_disp = false;
     let disp = match m.disp {
         Disp::Const(v) => {
             let v = i64::from(v).wrapping_add(extra);
@@ -100,7 +101,18 @@ fn mem_text(ctx: &LowerCtx, m: &Mem, size: Option<&str>, extra: i64) -> Result<S
             t.push_str(&offset_term_text(extra));
             t
         }
+        Disp::Label(l) | Disp::LabelFar(l) => {
+            label_disp = true;
+            text::label_text(ctx, Lbl::Bound(l))?
+        }
     };
+    if label_disp && !terms.is_empty() {
+        return Err("x86: a label-addressed memory operand has no base or index".to_string());
+    }
+    if label_disp {
+        // A base-less label address is RIP-relative.
+        terms.push("rip".to_string());
+    }
     if terms.is_empty() && disp.is_empty() {
         return Err("x86: empty memory operand".to_string());
     }

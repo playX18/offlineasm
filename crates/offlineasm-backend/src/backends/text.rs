@@ -144,6 +144,7 @@ pub fn disp_text(ctx: &LowerCtx, d: Disp) -> Result<String, String> {
     match d {
         Disp::Const(v) => Ok(v.to_string()),
         Disp::Sym(s) => sym_text(ctx, s),
+        Disp::Label(l) | Disp::LabelFar(l) => label_text(ctx, Lbl::Bound(l)),
     }
 }
 

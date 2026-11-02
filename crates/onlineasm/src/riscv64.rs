@@ -518,6 +518,7 @@ impl Lx<'_, '_, '_> {
             Disp::Const(v) if fits_d12(v) => Ok(Some((base, i64::from(v)))),
             Disp::Const(_) => Ok(None),
             Disp::Sym(_) => Err(self.bad("symbolic displacements are offlineasm-only")),
+            Disp::Label(_) | Disp::LabelFar(_) => Ok(None),
         }
     }
 
@@ -529,6 +530,7 @@ impl Lx<'_, '_, '_> {
                 match a.disp {
                     Disp::Const(v) => self.mov_imm(tmp, i64::from(v)),
                     Disp::Sym(_) => return Err(self.sym_err()),
+                    Disp::Label(l) | Disp::LabelFar(l) => self.la(tmp, Lbl::Bound(l)),
                 }
                 (tmp, Disp::Const(0))
             }
@@ -543,6 +545,9 @@ impl Lx<'_, '_, '_> {
                     self.rr(Opcode::ADD, tmp, tmp, base);
                 }
                 Disp::Sym(_) => return Err(self.sym_err()),
+                Disp::Label(_) | Disp::LabelFar(_) => {
+                    return Err(self.bad("a label-addressed operand has no base or index"))
+                }
             },
             Some((idx, scale)) => {
                 let sh: i64 = match scale {

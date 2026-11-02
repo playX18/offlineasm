@@ -35,7 +35,7 @@
 //!
 //! ## Backward assembly
 //!
-//! [`BackwardAssembler`] records all calls to assembler, `onlineasm!()` 
+//! [`BackwardAssembler`] records all calls to assembler, `onlineasm!()`
 //! invocations, and then replays them in reverse order at `finish`, so
 //! last emitted instruction executes first:
 //!
@@ -352,7 +352,7 @@ fn reject_offlineasm_only(mnemonic: Mnemonic, ops: &[Op]) -> Result<(), LowerErr
     for op in ops {
         match op {
             Op::Sym(_) => return Err(bad("symbolic immediates are offlineasm-only")),
-            Op::Mem(m) if m.disp.constant().is_none() => {
+            Op::Mem(m) if matches!(m.disp, Disp::Sym(_)) => {
                 return Err(bad("symbolic displacements are offlineasm-only"))
             }
             _ => {}
@@ -750,11 +750,13 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
     }
 
     /// Embeds `data` in the image and returns the label naming it.
-    /// Reference its address with `leap reg, {label}`, then load its
-    /// contents through `reg` (`loadq dst, [reg]`). The data is appended at
-    /// the current position as a constant island (16-byte aligned
-    /// for payloads over 8 bytes, 8-byte otherwise), so code must jump
-    /// over it.
+    ///
+    /// The payload is placed in a constant island at the end of the finalized
+    /// image (8-byte aligned for payloads up to 8 bytes, 16-byte otherwise),
+    /// so the label is usable from code emitted before or after this call.
+    /// Load it directly with a label-addressed memory operand
+    /// (`loadq dst, {asm.mem_label(label)}`) or take its address with
+    /// `leap reg, {label}`.
     ///
     /// # Panics
     ///
@@ -767,10 +769,89 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
         }
     }
 
+    /// [`Assembler::embed_data`] for one 64-bit word, written in native
+    /// (little-endian on every supported target) byte order.
+    pub fn embed_u64(&mut self, bits: u64) -> Label {
+        self.embed_data(&bits.to_ne_bytes())
+    }
+
     fn embed_data_forward(&mut self, data: &[u8]) -> Label {
         let constant = self.buf.add_constant(data.to_vec());
         self.labels.push(self.buf.get_label_for_constant(constant));
         Label(self.labels.len() as u32 - 1)
+    }
+
+    /// Writes `bytes` at the current position as raw data.
+    ///
+    /// Unlike [`Assembler::embed_data`], this does not create or move a label
+    /// and does not deduplicate. Use it to fill a block reserved by
+    /// [`Assembler::bind_data`] where the pool must sit (typically the end of
+    /// the image), after all referencing code has been emitted.
+    pub fn emit_data(&mut self, bytes: &[u8]) {
+        if BACKWARD {
+            self.tape.push_data(None, 1, bytes);
+        } else {
+            self.emit_data_forward(bytes);
+        }
+    }
+
+    /// Writes `v` as 4 little-endian bytes at the current position.
+    pub fn emit_u32(&mut self, v: u32) {
+        self.emit_data(&v.to_le_bytes());
+    }
+
+    /// Writes `v` as 8 little-endian bytes at the current position.
+    pub fn emit_u64(&mut self, v: u64) {
+        self.emit_data(&v.to_le_bytes());
+    }
+
+    /// Pads to `alignment` for a following data block.
+    ///
+    /// This is [`Assembler::align`] without the instruction-alignment
+    /// contract: the padding bytes are not executed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `alignment` is not a power of two.
+    pub fn align_data(&mut self, alignment: u32) {
+        assert!(
+            alignment.is_power_of_two(),
+            "onlineasm: alignment {alignment} is not a power of two"
+        );
+        if BACKWARD {
+            if alignment > 1 {
+                self.tape.push_data(None, alignment, &[]);
+            }
+        } else {
+            self.align_data_forward(alignment);
+        }
+    }
+
+    /// Aligns, binds `label`, and writes `bytes` as raw data.
+    ///
+    /// This is the "create the label first, fill the island later" form: call
+    /// [`Assembler::label`] while emitting code, reference the label with
+    /// [`Assembler::mem_label`], then bind and fill it here after the code.
+    pub fn bind_data(&mut self, label: Label, alignment: u32, bytes: &[u8]) {
+        if BACKWARD {
+            self.tape.push_data(Some(label), alignment, bytes);
+        } else {
+            self.align_data_forward(alignment);
+            self.bind_forward(label);
+            self.emit_data_forward(bytes);
+        }
+    }
+
+    fn emit_data_forward(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.buf.put1(byte);
+        }
+    }
+
+    fn align_data_forward(&mut self, alignment: u32) {
+        if alignment > 1 {
+            self.buf.align_to(alignment);
+        }
     }
 
     /// Converts `v` into an assembler operand.
@@ -780,14 +861,55 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
 
     /// Builds a `[base + disp]` memory operand (resolving a portable base).
     ///
+    /// When `base` is a [`Label`] and `disp` is zero, this builds the
+    /// PC-relative label-addressed form instead (see [`Assembler::mem_label`]).
+    ///
     /// # Panics
     ///
-    /// Panics when `base` does not resolve to a general-purpose register.
+    /// Panics when `base` does not resolve to a general-purpose register or a
+    /// label, or when a label is combined with a non-zero displacement.
     pub fn mem(&self, base: impl IntoOperand, disp: i32) -> Mem {
-        Mem {
-            base: Some(self.gpr_operand(base)),
-            index: None,
-            disp: Disp::Const(disp),
+        match self.op(base) {
+            Op::Label(l) => {
+                assert!(
+                    disp == 0,
+                    "onlineasm: a label-addressed memory operand has no displacement"
+                );
+                Mem::absolute(self.label_disp(l, false))
+            }
+            Op::Gpr(g) => Mem {
+                base: Some(g),
+                index: None,
+                disp: Disp::Const(disp),
+            },
+            other => panic!("onlineasm: expected a register operand, got {other:?}"),
+        }
+    }
+
+    /// Builds the PC-relative memory at `label`'s address (`[label]`):
+    /// `[rip + label]` on x86-64, an `ldr` literal on AArch64.
+    ///
+    /// Reference its contents with any load/store mnemonic, for example
+    /// `loadq dst, {mem}`. Use [`Assembler::mem_label_far`] when the label may
+    /// be out of the literal range on AArch64.
+    pub fn mem_label(&self, label: Label) -> Mem {
+        Mem::absolute(self.label_disp(Lbl::Bound(label), false))
+    }
+
+    /// Like [`Assembler::mem_label`], but asks for the AArch64 page-pair
+    /// (`adrp` + `ldr`/`str` low-12) form, which reaches ±4 GiB.
+    pub fn mem_label_far(&self, label: Label) -> Mem {
+        Mem::absolute(self.label_disp(Lbl::Bound(label), true))
+    }
+
+    fn label_disp(&self, l: Lbl, far: bool) -> Disp {
+        let Lbl::Bound(label) = l else {
+            panic!("onlineasm: a label-addressed memory operand needs a bound label")
+        };
+        if far {
+            Disp::LabelFar(label)
+        } else {
+            Disp::Label(label)
         }
     }
 
@@ -903,7 +1025,7 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
     /// );
     /// let code = asm.finish()?;
     /// let location = code.location(slot).ok_or("slot is unbound")?;
-    /// 
+    ///
     /// let mut jit = JitAllocator::new(Default::default());
     /// let mut span = code.allocate(&mut jit)?;
     /// // SAFETY: `span` holds `code`, and nothing executes the patched
@@ -1054,7 +1176,6 @@ impl Assembler<true> {
             }
         }
 
-
         let mut patches: Vec<PatchHandle> = Vec::with_capacity(patch_count as usize);
         for (position, item) in items.iter().rev().enumerate() {
             let index = items.len() - 1 - position;
@@ -1076,6 +1197,13 @@ impl Assembler<true> {
                 }
                 backward::TapeItem::Align(alignment) => self.align_forward(*alignment),
                 backward::TapeItem::Embed { .. } => {}
+                backward::TapeItem::Data { data, label, align } => {
+                    self.align_data_forward(*align);
+                    if let Some(v) = label {
+                        self.bind_forward(backward::remap_label(*v, &real));
+                    }
+                    self.emit_data_forward(data);
+                }
             }
         }
         patches.reverse();
@@ -1256,7 +1384,7 @@ impl Finished {
 /// Writes `value` into the immediate at `location` in loaded code.
 ///
 /// `location` is the [`PatchLocation::Data`] of a `#[patch]`ed `move` or a
-/// `#[patch_abs]` address slot (see [`Assembler::emit_patched`]). 
+/// `#[patch_abs]` address slot (see [`Assembler::emit_patched`]).
 ///
 /// # Errors
 ///

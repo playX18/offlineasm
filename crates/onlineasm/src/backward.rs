@@ -6,7 +6,7 @@
 //! instruction executes first. Label handles creaed while recording are
 //! virtual indices, the replay maps them onto real labels.
 
-use super::ir::{Label, Lbl, Mnemonic, Op};
+use super::ir::{Disp, Label, Lbl, Mnemonic, Op};
 use super::lower::PatchHandle;
 
 /// One recorded backward-assembler action.
@@ -27,6 +27,13 @@ pub(super) enum TapeItem {
     Align(u32),
     /// A recorded [`crate::Assembler::embed_data`]; `label` is virtual.
     Embed { data: Box<[u8]>, label: Label },
+    /// A recorded raw-data write ([`crate::Assembler::emit_data`] or
+    /// [`crate::Assembler::bind_data`]); `label` is virtual when present.
+    Data {
+        data: Box<[u8]>,
+        label: Option<Label>,
+        align: u32,
+    },
 }
 
 /// Recording tape for a backward assembler.
@@ -82,6 +89,18 @@ impl ReverseTape {
             label,
         });
         label
+    }
+
+    /// Records a raw-data write. `label` (when binding) must be virtual.
+    pub(super) fn push_data(&mut self, label: Option<Label>, align: u32, data: &[u8]) {
+        if let Some(label) = label {
+            self.check_virtual(label);
+        }
+        self.items.push(TapeItem::Data {
+            data: data.into(),
+            label,
+            align,
+        });
     }
 
     pub(super) fn next_virtual(&mut self) -> Label {
@@ -141,6 +160,14 @@ pub(super) fn remap_label(v: Label, real: &[Label]) -> Label {
 pub(super) fn remap_op(op: Op, real: &[Label]) -> Op {
     match op {
         Op::Label(Lbl::Bound(v)) => Op::Label(Lbl::Bound(remap_label(v, real))),
+        Op::Mem(mut m) => {
+            m.disp = match m.disp {
+                Disp::Label(v) => Disp::Label(remap_label(v, real)),
+                Disp::LabelFar(v) => Disp::LabelFar(remap_label(v, real)),
+                other => other,
+            };
+            Op::Mem(m)
+        }
         other => other,
     }
 }

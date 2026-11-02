@@ -616,6 +616,28 @@ fn emit_node(l: &mut Lx, inst: &Inst) -> Result<Option<PatchHandle>, LowerError>
                 l.x(id, &[go(reg), mo(a)]);
                 return none;
             }
+            if !*acquire && addr.base.is_none() && addr.index.is_none() {
+                let literal = match (*w, *sx) {
+                    (Width::B64, Sx::Zero) => Some((InstId::Ldr, x(*dst))),
+                    (Width::B32, Sx::Zero) => Some((InstId::Ldr, gpr(*dst, view(Width::B32)))),
+                    (Width::B32, Sx::Sign) => Some((InstId::Ldrsw, x(*dst))),
+                    _ => None,
+                };
+                if let Some((id, reg)) = literal {
+                    match addr.disp {
+                        Disp::Label(label) => {
+                            let t = l.bound_label(label)?;
+                            l.x(id, &[go(reg), mo(label_ptr(t, 0))]);
+                            return none;
+                        }
+                        Disp::LabelFar(label) => {
+                            l.label_far_load(id, reg, label)?;
+                            return none;
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let id = match (w, sx) {
                 (Width::B8, Sx::Zero) => InstId::Ldrb,
                 (Width::B8, Sx::Sign) => InstId::Ldrsb,
@@ -1273,6 +1295,51 @@ impl Lx<'_, '_, '_> {
         self.res.resolve(l, || self.asm.get_label())
     }
 
+    /// Returns the backend label for a frontend handle that already exists in
+    /// this assembler's label table.
+    fn bound_label(&self, l: offlineasm_ir::Label) -> Result<Label, LowerError> {
+        self.res
+            .get(l)
+            .ok_or_else(|| self.bad("label handle does not belong to this assembler"))
+    }
+
+    /// Materializes the address of `l` into `xd` as `adrp` + `add :lo12:`.
+    ///
+    /// Both instructions carry load-time relocations with a label target, so
+    /// the result is correct even when this buffer is linked at a non-page
+    /// offset (unlike the `A64AddAbsLo12` fixup used by [`Self::label`]).
+    fn label_address_relocs(&mut self, xd: Gp, l: offlineasm_ir::Label) -> Result<(), LowerError> {
+        let t = self.bound_label(l)?;
+        let sym = RelocTarget::Label(t);
+        let rd = xd.id();
+        let buf = self.asm.buffer_mut();
+        buf.add_reloc(Reloc::Aarch64AdrPrelPgHi21, sym.clone(), 0);
+        buf.put4(0x9000_0000 | rd);
+        buf.add_reloc(Reloc::Aarch64AddAbsLo12Nc, sym, 0);
+        buf.put4(0x9100_0000 | rd << 5 | rd);
+        Ok(())
+    }
+
+    /// Emits `adrp scratch, l; ldr rt, [scratch, #:lo12:l]` for the long-range
+    /// label form. The load is patched at load time with
+    /// [`Reloc::Aarch64Ld64AbsLo12Nc`].
+    fn label_far_load(
+        &mut self,
+        id: InstId,
+        rt: Gp,
+        l: offlineasm_ir::Label,
+    ) -> Result<(), LowerError> {
+        let t = self.bound_label(l)?;
+        let sym = RelocTarget::Label(t);
+        let scratch = u32::from(SCRATCH.0);
+        let buf = self.asm.buffer_mut();
+        buf.add_reloc(Reloc::Aarch64AdrPrelPgHi21, sym.clone(), 0);
+        buf.put4(0x9000_0000 | scratch);
+        buf.add_reloc(Reloc::Aarch64Ld64AbsLo12Nc, sym, 0);
+        self.x(id, &[go(rt), mo(ptr(x(SCRATCH), 0))]);
+        Ok(())
+    }
+
     fn branch(&mut self, br: Br, target: Lbl, patch: bool) -> Option<PatchHandle> {
         if let Br::Cbz(r) | Br::Cbnz(r) | Br::Tbnz(r, _) = br {
             if is_sp(&go(r)) {
@@ -1337,9 +1404,17 @@ impl Lx<'_, '_, '_> {
     /// [`SCRATCH`], returning the scratch register.
     fn synth_addr(&mut self, m: &Mem) -> Result<Gp, LowerError> {
         let t = x(SCRATCH);
+        if let Some(label) = m.disp.label() {
+            if m.base.is_some() || m.index.is_some() {
+                return Err(self.bad("a label-addressed operand has no base or index"));
+            }
+            self.label_address_relocs(t, label)?;
+            return Ok(t);
+        }
         let disp = match m.disp {
             Disp::Const(d) => d,
             Disp::Sym(_) => return Err(self.bad("symbolic displacements are offlineasm-only")),
+            Disp::Label(_) | Disp::LabelFar(_) => unreachable!("handled above"),
         };
         let Some(base) = m.base else {
             self.mov_imm(t, i64::from(disp));
@@ -1419,6 +1494,9 @@ impl Lx<'_, '_, '_> {
                 }
             }
             (_, Disp::Sym(_)) => Err(self.bad("symbolic displacements are offlineasm-only")),
+            (_, Disp::Label(_) | Disp::LabelFar(_)) => {
+                Err(self.bad("a label-addressed operand has no base or index"))
+            }
             (Some(_), _) => {
                 let t = self.synth_addr(m)?;
                 Ok(ptr(t, 0))
@@ -1488,6 +1566,25 @@ impl Lx<'_, '_, '_> {
                 Ok(())
             }
             Op::Mem(m) => {
+                if m.base.is_none() && m.index.is_none() {
+                    match m.disp {
+                        Disp::Label(label) => {
+                            if matches!(w, Width::B32 | Width::B64) {
+                                let t = self.bound_label(label)?;
+                                self.x(load_id(w), &[go(dst), mo(label_ptr(t, 0))]);
+                                return Ok(());
+                            }
+                        }
+                        Disp::LabelFar(label) => {
+                            if matches!(w, Width::B32 | Width::B64) {
+                                let id = load_id(w);
+                                self.label_far_load(id, dst, label)?;
+                                return Ok(());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 let a = self.addr_operand(m, w.bytes())?;
                 self.x(load_id(w), &[go(dst), mo(a)]);
                 Ok(())
@@ -1706,22 +1803,41 @@ impl Lx<'_, '_, '_> {
 
     fn test_flags(&mut self, w: Width, value: &Op, mask: Option<&Op>) -> Result<(), LowerError> {
         let v = self.op_to_reg(value, w, SCRATCH)?;
-        if let Some(m) = mask {
-            let mv = self.op_to_reg(m, w, SCRATCH2)?;
-            self.x(InstId::And, &[go(v), go(v), go(mv)]);
-        }
+        let Some(m) = mask else {
+            match w {
+                Width::B8 | Width::B16 => {
+                    let id = if w == Width::B8 {
+                        InstId::Sxtb
+                    } else {
+                        InstId::Sxth
+                    };
+                    let t = wv(SCRATCH2);
+                    self.x(id, &[go(t), go(v)]);
+                    self.x(InstId::Tst, &[go(t), go(t)]);
+                }
+                _ => self.x(InstId::Tst, &[go(v), go(v)]),
+            }
+            return Ok(());
+        };
+        let mv = self.op_to_reg(m, w, SCRATCH2)?;
         match w {
+            // `tst` has no byte/halfword form, so mask into the second
+            // scratch, then sign-extend and test that. `value` is never
+            // written: callers rely on it surviving a masked test.
             Width::B8 | Width::B16 => {
+                let t = wv(SCRATCH2);
+                self.x(InstId::And, &[go(t), go(v), go(mv)]);
                 let id = if w == Width::B8 {
                     InstId::Sxtb
                 } else {
                     InstId::Sxth
                 };
-                let t = wv(SCRATCH2);
-                self.x(id, &[go(t), go(v)]);
+                self.x(id, &[go(t), go(t)]);
                 self.x(InstId::Tst, &[go(t), go(t)]);
             }
-            _ => self.x(InstId::Tst, &[go(v), go(v)]),
+            // `tst Xn, Xm` is `ands XZR, Xn, Xm`: one instruction, no
+            // clobber, and it accepts a register mask.
+            _ => self.x(InstId::Tst, &[go(v), go(mv)]),
         }
         Ok(())
     }

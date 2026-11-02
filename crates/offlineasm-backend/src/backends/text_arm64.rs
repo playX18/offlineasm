@@ -266,12 +266,18 @@ fn logical_imm_text(v: i64, wide: bool) -> String {
 fn synth_addr(ctx: &mut LowerCtx, m: &Mem) -> Result<String, String> {
     let Some(base) = m.base else {
         let t = gpr(SCRATCH, Width::B64)?;
-        if let Disp::Sym(s) = m.disp {
-            let text = text::sym_text(ctx, s)?;
-            ctx.emitter.puts(&format!("ldr {}, ={}", t, text));
-            return add_index(ctx, &t, m);
+        match m.disp {
+            Disp::Sym(s) => {
+                let text = text::sym_text(ctx, s)?;
+                ctx.emitter.puts(&format!("ldr {}, ={}", t, text));
+            }
+            Disp::Label(l) | Disp::LabelFar(l) => {
+                let text = text::label_text(ctx, Lbl::Bound(l))?;
+                // The assembler picks adrp/add or a literal pool for `=label`.
+                ctx.emitter.puts(&format!("ldr {}, ={}", t, text));
+            }
+            Disp::Const(disp) => mov_imm(ctx, &t, true, i64::from(disp))?,
         }
-        mov_imm(ctx, &t, true, m.disp.const_or_zero() as i64)?;
         return add_index(ctx, &t, m);
     };
     let b = gpr(base, Width::B64)?;
@@ -280,6 +286,9 @@ fn synth_addr(ctx: &mut LowerCtx, m: &Mem) -> Result<String, String> {
         Disp::Const(disp) => disp,
         Disp::Sym(_) => {
             return Err("aarch64: a symbolic displacement needs a base-only address".to_string())
+        }
+        Disp::Label(_) | Disp::LabelFar(_) => {
+            return Err("aarch64: a label-addressed memory operand has no base".to_string())
         }
     };
     let magnitude = u64::from(disp.unsigned_abs());
@@ -372,6 +381,9 @@ fn addr_operand(ctx: &mut LowerCtx, m: &Mem, size: u32) -> Result<String, String
         (Some(_), _) => {
             let t = synth_addr(ctx, m)?;
             Ok(format!("[{}]", t))
+        }
+        (None, Disp::Label(_) | Disp::LabelFar(_)) => {
+            Err("aarch64: a label-addressed memory operand has no base".to_string())
         }
     }
 }
@@ -862,8 +874,19 @@ fn test_flags(ctx: &mut LowerCtx, w: Width, value: &Op, mask: Option<&Op>) -> Re
     let v = match mask {
         Some(m) => {
             let mv = op_to_reg(ctx, m, w, SCRATCH2)?;
-            ctx.emitter.puts(&format!("and {}, {}, {}", v, v, mv));
-            v
+            // `value` must survive a masked test: use `tst`, which writes no
+            // register, instead of `and v, v, mask`.
+            match w {
+                Width::B8 | Width::B16 => {
+                    let t = gpr(SCRATCH2, Width::B32)?;
+                    ctx.emitter.puts(&format!("and {}, {}, {}", t, v, mv));
+                    t
+                }
+                _ => {
+                    ctx.emitter.puts(&format!("tst {}, {}", v, mv));
+                    return Ok(());
+                }
+            }
         }
         None => v,
     };

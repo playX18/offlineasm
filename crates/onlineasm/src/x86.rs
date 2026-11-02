@@ -101,7 +101,17 @@ fn sib(base: Gpr, index: Gpr, shift: u32, disp: i32, size: u32) -> AMem {
     ptr_index(&gx(base), &gx(index), shift, disp, size)
 }
 
-fn amem(a: &Mem, size: u32, extra: i64) -> AMem {
+fn amem(a: &Mem, size: u32, extra: i64, res: &LabelResolver) -> AMem {
+    if let Some(label) = a.disp.label() {
+        assert!(
+            a.base.is_none() && a.index.is_none(),
+            "onlineasm: a label-addressed memory operand has no base or index"
+        );
+        let t = res
+            .get(label)
+            .unwrap_or_else(|| panic!("onlineasm: label handle does not belong to this assembler"));
+        return label_ptr(t, extra as i32, size);
+    }
     let disp = i64::from(a.disp.const_or_zero()).wrapping_add(extra);
     match (a.base, a.index) {
         (Some(b), Some((i, scale))) => sib(b, i, scale.trailing_zeros(), disp as i32, size),
@@ -113,12 +123,12 @@ fn amem(a: &Mem, size: u32, extra: i64) -> AMem {
     }
 }
 
-fn mo(a: &Mem, w: W) -> Operand {
-    *amem(a, w.bytes(), 0).as_operand()
+fn mo(a: &Mem, w: W, res: &LabelResolver) -> Operand {
+    *amem(a, w.bytes(), 0, res).as_operand()
 }
 
-fn mo_at(a: &Mem, size: u32, extra: i64) -> Operand {
-    *amem(a, size, extra).as_operand()
+fn mo_at(a: &Mem, size: u32, extra: i64, res: &LabelResolver) -> Operand {
+    *amem(a, size, extra, res).as_operand()
 }
 
 /// `[rsp + disp]`.
@@ -442,11 +452,11 @@ fn emit_inst(
             none
         }
         Inst::LoadF { k, dst, addr } => {
-            l.x(fk_mov(*k), &[xo(*dst), mo(addr, fk_width(*k))]);
+            l.x(fk_mov(*k), &[xo(*dst), l.mo(addr, fk_width(*k))]);
             none
         }
         Inst::StoreF { k, src, addr } => {
-            l.x(fk_mov(*k), &[mo(addr, fk_width(*k)), xo(*src)]);
+            l.x(fk_mov(*k), &[l.mo(addr, fk_width(*k)), xo(*src)]);
             none
         }
         Inst::FMov { k, dst, src } => {
@@ -454,11 +464,11 @@ fn emit_inst(
             none
         }
         Inst::LoadV { dst, addr } => {
-            l.x(InstId::Movdqu, &[xo(*dst), mo_at(addr, 16, 0)]);
+            l.x(InstId::Movdqu, &[xo(*dst), l.mo_at(addr, 16, 0)]);
             none
         }
         Inst::StoreV { src, addr } => {
-            l.x(InstId::Movups, &[mo_at(addr, 16, 0), xo(*src)]);
+            l.x(InstId::Movups, &[l.mo_at(addr, 16, 0), xo(*src)]);
             none
         }
         Inst::VMov { dst, src } => {
@@ -796,7 +806,7 @@ fn emit_inst(
             }
             let s = match src {
                 Op::Gpr(g) => gw(*g, *from),
-                Op::Mem(m) => mo(m, *from),
+                Op::Mem(m) => l.mo(m, *from),
                 _ => return Err(bad(mn, "int-to-float needs a register or memory source")),
             };
             let id = match k {
@@ -873,14 +883,14 @@ fn emit_inst(
             src,
             branch,
         } => {
-            e_lock(l.asm, InstId::Cmpxchg, &[mo(mem, *w), gw(*src, *w)]);
+            e_lock(l.asm, InstId::Cmpxchg, &[l.mo(mem, *w), gw(*src, *w)]);
             if let Some(target) = branch {
                 branch_to(l.asm, l.res, Cond::NZ, *target, false);
             }
             none
         }
         Inst::LoadLinked { w, mem, dst } => {
-            l.x(InstId::Mov, &[gw(*dst, *w), mo(mem, *w)]);
+            l.x(InstId::Mov, &[gw(*dst, *w), l.mo(mem, *w)]);
             l.zero_extend_result(*dst, *w);
             none
         }
@@ -890,7 +900,7 @@ fn emit_inst(
             src,
             mem,
         } => {
-            e_lock(l.asm, InstId::Cmpxchg, &[mo(mem, *w), gw(*src, *w)]);
+            e_lock(l.asm, InstId::Cmpxchg, &[l.mo(mem, *w), gw(*src, *w)]);
             l.set_zx(Cond::NZ, &Op::Gpr(*status))?;
             none
         }
@@ -1004,6 +1014,17 @@ impl Lx<'_, '_, '_> {
         bad(self.mn, msg)
     }
 
+    /// A `[mem]` operand at width `w`, resolving a label displacement through
+    /// this assembler's labels.
+    fn mo(&self, a: &Mem, w: W) -> Operand {
+        mo(a, w, self.res)
+    }
+
+    /// Like [`Lx::mo`], with an explicit access size and trailing offset.
+    fn mo_at(&self, a: &Mem, size: u32, extra: i64) -> Operand {
+        mo_at(a, size, extra, self.res)
+    }
+
     fn new_label(&mut self) -> Label {
         self.asm.get_label()
     }
@@ -1027,7 +1048,7 @@ impl Lx<'_, '_, '_> {
     fn rm(&self, w: W, op: &Op, msg: &str) -> Result<Operand, LowerError> {
         match op {
             Op::Gpr(g) => Ok(gw(*g, w)),
-            Op::Mem(m) => Ok(mo(m, w)),
+            Op::Mem(m) => Ok(self.mo(m, w)),
             _ => Err(self.bad(msg)),
         }
     }
@@ -1037,7 +1058,7 @@ impl Lx<'_, '_, '_> {
             Op::Imm(v) => Ok(io(*v)),
             Op::Gpr(g) => Ok(gw(*g, w)),
             Op::Fpr(x) => Ok(xo(*x)),
-            Op::Mem(m) => Ok(mo(m, w)),
+            Op::Mem(m) => Ok(self.mo(m, w)),
             Op::Sym(_) => Err(self.bad("symbolic immediates are offlineasm-only")),
             Op::Label(_) => {
                 Err(self.bad("a label is only valid as a branch target or address source"))
@@ -1049,7 +1070,7 @@ impl Lx<'_, '_, '_> {
     fn fp_src(&self, k: FKind, op: &Op) -> Result<Operand, LowerError> {
         match op {
             Op::Fpr(x) => Ok(xo(*x)),
-            Op::Mem(m) => Ok(mo(m, fk_width(k))),
+            Op::Mem(m) => Ok(self.mo(m, fk_width(k))),
             _ => Err(self.bad("float operation needs a register or memory operand")),
         }
     }
@@ -1068,7 +1089,7 @@ impl Lx<'_, '_, '_> {
                 Ok(())
             }
             (Op::Gpr(d), Op::Mem(m)) => {
-                self.x(InstId::Mov, &[gw(*d, w), mo(m, w)]);
+                self.x(InstId::Mov, &[gw(*d, w), self.mo(m, w)]);
                 Ok(())
             }
             (Op::Gpr(d), Op::Label(l)) => {
@@ -1093,7 +1114,7 @@ impl Lx<'_, '_, '_> {
     }
 
     fn store(&mut self, w: W, src: &Op, m: &Mem) -> Result<(), LowerError> {
-        let addr = mo(m, w);
+        let addr = self.mo(m, w);
         match src {
             Op::Gpr(s) => self.x(InstId::Mov, &[addr, gw(*s, w)]),
             Op::Imm(v) if imm_encodable(w, *v) => self.x(InstId::Mov, &[addr, io(*v)]),
@@ -1107,7 +1128,7 @@ impl Lx<'_, '_, '_> {
                 self.x(InstId::Mov, &[addr, gw(SCRATCH, w)]);
             }
             Op::Mem(s) => {
-                self.x(InstId::Mov, &[gw(SCRATCH, w), mo(s, w)]);
+                self.x(InstId::Mov, &[gw(SCRATCH, w), self.mo(s, w)]);
                 self.x(InstId::Mov, &[addr, gw(SCRATCH, w)]);
             }
             Op::Sym(_) => return Err(self.bad("symbolic immediates are offlineasm-only")),
@@ -1140,7 +1161,7 @@ impl Lx<'_, '_, '_> {
             (W::B8, Sx::Zero) => Some((InstId::Movzx, W::B32)),
             (W::B8, Sx::Sign) => Some((InstId::Movsx, W::B64)),
         };
-        let a = mo(addr, w);
+        let a = self.mo(addr, w);
         match extending {
             Some((id, to)) => self.x(id, &[gw(dst, to), a]),
             None => self.x(InstId::Mov, &[gw(dst, w), a]),
@@ -1152,7 +1173,7 @@ impl Lx<'_, '_, '_> {
             return Err(self.bad("`lea` needs a 32- or 64-bit width"));
         }
         let m = match src {
-            LeaSrc::Mem(m) => mo_at(m, 0, 0),
+            LeaSrc::Mem(m) => self.mo_at(m, 0, 0),
             LeaSrc::Label(l) => label_mem(self.asm, self.res, *l),
             // `lea d, [rip + sym]`.
             LeaSrc::Extern(e) if e.reach == Reach::Near => *sym_ptr(ext_sym(*e), 0, 0).as_operand(),
@@ -1170,7 +1191,7 @@ impl Lx<'_, '_, '_> {
     fn push(&mut self, op: &Op) -> Result<(), LowerError> {
         match op {
             Op::Gpr(g) => self.x(InstId::Push, &[gw(*g, W::B64)]),
-            Op::Mem(m) => self.x(InstId::Push, &[mo(m, W::B64)]),
+            Op::Mem(m) => self.x(InstId::Push, &[self.mo(m, W::B64)]),
             Op::Imm(v) if W::B32.fits(*v) => self.x(InstId::Push, &[io(*v)]),
             Op::Imm(v) => {
                 self.load_scratch_imm(*v);
@@ -1191,7 +1212,7 @@ impl Lx<'_, '_, '_> {
     fn pop(&mut self, op: &Op) -> Result<(), LowerError> {
         match op {
             Op::Gpr(g) => self.x(InstId::Pop, &[gw(*g, W::B64)]),
-            Op::Mem(m) => self.x(InstId::Pop, &[mo(m, W::B64)]),
+            Op::Mem(m) => self.x(InstId::Pop, &[self.mo(m, W::B64)]),
             _ => return Err(self.bad("`pop` needs a register or memory operand")),
         }
         Ok(())
@@ -1200,7 +1221,7 @@ impl Lx<'_, '_, '_> {
     fn bin2(&mut self, id: InstId, w: W, dst: &Op, src: &Op) -> Result<(), LowerError> {
         match (dst, src) {
             (Op::Gpr(d), Op::Gpr(s)) => self.x(id, &[gw(*d, w), gw(*s, w)]),
-            (Op::Gpr(d), Op::Mem(m)) => self.x(id, &[gw(*d, w), mo(m, w)]),
+            (Op::Gpr(d), Op::Mem(m)) => self.x(id, &[gw(*d, w), self.mo(m, w)]),
             (Op::Gpr(d), Op::Imm(v)) => {
                 if imm_encodable(w, *v) {
                     self.x(id, &[gw(*d, w), io(*v)]);
@@ -1210,7 +1231,7 @@ impl Lx<'_, '_, '_> {
                 }
             }
             (Op::Mem(m), src) => {
-                let addr = mo(m, w);
+                let addr = self.mo(m, w);
                 let s = self.bin_source(w, src)?;
                 self.x(id, &[addr, s]);
             }
@@ -1237,7 +1258,7 @@ impl Lx<'_, '_, '_> {
                 Ok(gw(SCRATCH, w))
             }
             Op::Mem(m) => {
-                self.x(InstId::Mov, &[gw(SCRATCH, w), mo(m, w)]);
+                self.x(InstId::Mov, &[gw(SCRATCH, w), self.mo(m, w)]);
                 Ok(gw(SCRATCH, w))
             }
             Op::Sym(_) => Err(self.bad("symbolic immediates are offlineasm-only")),
@@ -1335,7 +1356,7 @@ impl Lx<'_, '_, '_> {
                 let d = self.mul_dst(w, dst)?;
                 let l = match lhs {
                     Op::Gpr(g) => gw(*g, w),
-                    Op::Mem(m) => mo(m, w),
+                    Op::Mem(m) => self.mo(m, w),
                     _ => return Err(self.bad("`imul` needs a register or memory source here")),
                 };
                 self.x(InstId::Imul, &[d, l, io(*v)]);
@@ -1359,7 +1380,7 @@ impl Lx<'_, '_, '_> {
         let d = self.mul_dst(w, dst)?;
         match src {
             Op::Gpr(g) => self.x(InstId::Imul, &[d, gw(*g, w)]),
-            Op::Mem(m) => self.x(InstId::Imul, &[d, mo(m, w)]),
+            Op::Mem(m) => self.x(InstId::Imul, &[d, self.mo(m, w)]),
             Op::Imm(v) if W::B32.fits(*v) => self.x(InstId::Imul, &[d, d, io(*v)]),
             Op::Imm(v) => {
                 self.load_scratch_imm(*v);
@@ -1395,7 +1416,7 @@ impl Lx<'_, '_, '_> {
     fn unop(&mut self, id: InstId, w: W, dst: &Op) -> Result<(), LowerError> {
         match dst {
             Op::Gpr(g) => self.x(id, &[gw(*g, w)]),
-            Op::Mem(m) => self.x(id, &[mo(m, w)]),
+            Op::Mem(m) => self.x(id, &[self.mo(m, w)]),
             _ => return Err(self.bad("needs a register or memory operand")),
         }
         Ok(())
@@ -1460,7 +1481,7 @@ impl Lx<'_, '_, '_> {
     fn div_mod1(&mut self, signed: bool, w: W, divisor: &Op) -> Result<(), LowerError> {
         let src = match divisor {
             Op::Gpr(g) => gw(*g, w),
-            Op::Mem(m) => mo(m, w),
+            Op::Mem(m) => self.mo(m, w),
             Op::Imm(v) => {
                 self.load_scratch_imm(*v);
                 gw(SCRATCH, w)
@@ -1496,10 +1517,10 @@ impl Lx<'_, '_, '_> {
             }
             Op::Gpr(g) => gw(*g, w),
             Op::Mem(m) if acc_mem(m) => {
-                self.x(InstId::Mov, &[sc, mo(m, w)]);
+                self.x(InstId::Mov, &[sc, self.mo(m, w)]);
                 sc
             }
-            Op::Mem(m) => mo(m, w),
+            Op::Mem(m) => self.mo(m, w),
             Op::Imm(v) => {
                 self.load_scratch_imm(*v);
                 sc
@@ -1512,7 +1533,7 @@ impl Lx<'_, '_, '_> {
         self.x(InstId::Push, &[dx64]);
         match dvd {
             Op::Gpr(g) => self.x(InstId::Mov, &[axw, gw(*g, w)]),
-            Op::Mem(m) => self.x(InstId::Mov, &[axw, mo(m, w)]),
+            Op::Mem(m) => self.x(InstId::Mov, &[axw, self.mo(m, w)]),
             Op::Imm(v) => {
                 if w == W::B32 && !imm_encodable(w, *v) {
                     self.x(InstId::Movabs, &[ax64, io(*v)]);
@@ -1626,7 +1647,7 @@ impl Lx<'_, '_, '_> {
         let s = match src {
             Op::Gpr(g) => gw(*g, w),
             Op::Mem(m) => {
-                self.x(InstId::Mov, &[gw(SCRATCH, w), mo(m, w)]);
+                self.x(InstId::Mov, &[gw(SCRATCH, w), self.mo(m, w)]);
                 gw(SCRATCH, w)
             }
             Op::Imm(v) => {
@@ -1670,7 +1691,7 @@ impl Lx<'_, '_, '_> {
                 gw(SCRATCH, w)
             }
             Op::Mem(m) if matches!(rhs, Op::Imm(_) | Op::Mem(_)) => {
-                self.x(InstId::Mov, &[gw(SCRATCH, w), mo(m, w)]);
+                self.x(InstId::Mov, &[gw(SCRATCH, w), self.mo(m, w)]);
                 scratch = true;
                 gw(SCRATCH, w)
             }
@@ -1695,7 +1716,7 @@ impl Lx<'_, '_, '_> {
         if matches!(mask, None | Some(Op::Imm(-1))) {
             match value {
                 Op::Gpr(g) => self.x(InstId::Test, &[gw(*g, w), gw(*g, w)]),
-                Op::Mem(m) => self.x(InstId::Cmp, &[mo(m, w), io(0)]),
+                Op::Mem(m) => self.x(InstId::Cmp, &[self.mo(m, w), io(0)]),
                 _ => return Err(self.bad("test needs a register or memory value")),
             }
             return Ok(());
@@ -1712,7 +1733,7 @@ impl Lx<'_, '_, '_> {
                 if !imm_encodable(w, *v) {
                     return Err(self.bad("test mask is out of range for this width"));
                 }
-                self.x(InstId::Test, &[mo(m, w), io(*v)]);
+                self.x(InstId::Test, &[self.mo(m, w), io(*v)]);
             }
             (Op::Gpr(m), Op::Gpr(v)) => self.x(InstId::Test, &[gw(*v, w), gw(*m, w)]),
             _ => return Err(self.bad("unsupported test operands")),
@@ -1726,7 +1747,7 @@ impl Lx<'_, '_, '_> {
                 self.x(cc.setcc(), &[gw(*g, W::B8)]);
                 self.x(InstId::Movzx, &[gw(*g, W::B32), gw(*g, W::B8)]);
             }
-            Op::Mem(m) => self.x(cc.setcc(), &[mo(m, W::B8)]),
+            Op::Mem(m) => self.x(cc.setcc(), &[self.mo(m, W::B8)]),
             _ => return Err(self.bad("`set*` needs a register or memory destination")),
         }
         Ok(())
@@ -1808,7 +1829,7 @@ impl Lx<'_, '_, '_> {
                 self.x(id, &[*t.as_operand()]);
             }
             IrTarget::Reg(g) => self.x(id, &[gw(*g, W::B64)]),
-            IrTarget::Mem(m) => self.x(id, &[mo(m, W::B64)]),
+            IrTarget::Mem(m) => self.x(id, &[self.mo(m, W::B64)]),
             IrTarget::Abs(v) => {
                 self.load_scratch_imm(*v);
                 self.x(id, &[gw(SCRATCH, W::B64)]);
@@ -1920,7 +1941,7 @@ impl Lx<'_, '_, '_> {
             Op::Fpr(_) if aliased => xo(FSCRATCH),
             Op::Fpr(x) => xo(*x),
             Op::Mem(m) => {
-                self.x(fk_mov(k), &[xo(FSCRATCH), mo(m, fk_width(k))]);
+                self.x(fk_mov(k), &[xo(FSCRATCH), self.mo(m, fk_width(k))]);
                 xo(FSCRATCH)
             }
             _ => return Err(self.bad("`abs`/`neg` needs a register or memory source")),
@@ -1937,9 +1958,9 @@ impl Lx<'_, '_, '_> {
         let to_fpr = matches!(dir, BitcastDir::Q2D | BitcastDir::I2F);
         let ops = match (to_fpr, dst, src) {
             (true, Op::Fpr(d), Op::Gpr(s)) => [xo(*d), gw(*s, w)],
-            (true, Op::Fpr(d), Op::Mem(m)) => [xo(*d), mo(m, w)],
+            (true, Op::Fpr(d), Op::Mem(m)) => [xo(*d), self.mo(m, w)],
             (false, Op::Gpr(d), Op::Fpr(s)) => [gw(*d, w), xo(*s)],
-            (false, Op::Mem(m), Op::Fpr(s)) => [mo(m, w), xo(*s)],
+            (false, Op::Mem(m), Op::Fpr(s)) => [self.mo(m, w), xo(*s)],
             _ => {
                 return Err(self.bad(match dir {
                     BitcastDir::Q2D => {
@@ -1965,14 +1986,14 @@ impl Lx<'_, '_, '_> {
         let l = match lhs {
             Op::Fpr(x) => xo(*x),
             Op::Mem(m) => {
-                self.x(fk_mov(k), &[xo(FSCRATCH), mo(m, fk_width(k))]);
+                self.x(fk_mov(k), &[xo(FSCRATCH), self.mo(m, fk_width(k))]);
                 xo(FSCRATCH)
             }
             _ => return Err(self.bad("float compare needs a register or memory left side")),
         };
         let r = match rhs {
             Op::Fpr(x) => xo(*x),
-            Op::Mem(m) => mo(m, fk_width(k)),
+            Op::Mem(m) => self.mo(m, fk_width(k)),
             _ => return Err(self.bad("float compare needs a register or memory right side")),
         };
         let id = match k {
@@ -2104,12 +2125,12 @@ impl Lx<'_, '_, '_> {
                 if op == AtomicOp::Sub {
                     self.x(InstId::Neg, &[gw(reg, w)]);
                 }
-                e_lock(self.asm, InstId::Xadd, &[mo(mem, w), gw(reg, w)]);
+                e_lock(self.asm, InstId::Xadd, &[self.mo(mem, w), gw(reg, w)]);
                 self.zero_extend_result(reg, w);
             }
             AtomicOp::Xchg => {
                 let (reg, mem) = self.rmw_operands(a, b)?;
-                self.x(InstId::Xchg, &[mo(mem, w), gw(reg, w)]);
+                self.x(InstId::Xchg, &[self.mo(mem, w), gw(reg, w)]);
                 self.zero_extend_result(reg, w);
             }
             AtomicOp::And | AtomicOp::Or | AtomicOp::Xor => self.atomic_logic(op, w, a, b)?,
@@ -2120,7 +2141,7 @@ impl Lx<'_, '_, '_> {
     fn atomic_logic(&mut self, op: AtomicOp, w: W, a: &Op, b: &Op) -> Result<(), LowerError> {
         let (reg, mem) = self.rmw_operands(a, b)?;
         let (ax, d, s) = (gw(RAX, w), gw(reg, w), gw(SCRATCH, w));
-        let m = mo(mem, w);
+        let m = self.mo(mem, w);
         let id = match op {
             AtomicOp::And => InstId::And,
             AtomicOp::Or => InstId::Or,
@@ -2183,7 +2204,10 @@ impl Lx<'_, '_, '_> {
                 let dw = if w == PairW::B64 { W::B64 } else { W::B32 };
                 let (g1, g2) = (gpr(first)?, gpr(second)?);
                 let (d1, d2) = (gw(g1, dw), gw(g2, dw));
-                let (m1, m2) = (mo(mem, dw), mo_at(mem, dw.bytes(), i64::from(dw.bytes())));
+                let (m1, m2) = (
+                    self.mo(mem, dw),
+                    self.mo_at(mem, dw.bytes(), i64::from(dw.bytes())),
+                );
                 let clobbers =
                     |g: Gpr| mem.base == Some(g) || mem.index.is_some_and(|(idx, _)| idx == g);
                 if clobbers(g1) && (g1 == g2 || clobbers(g2)) {
@@ -2202,29 +2226,32 @@ impl Lx<'_, '_, '_> {
             (PairW::B64 | PairW::B32, false) => {
                 let dw = if w == PairW::B64 { W::B64 } else { W::B32 };
                 let (s1, s2) = (gw(gpr(first)?, dw), gw(gpr(second)?, dw));
-                let (m1, m2) = (mo(mem, dw), mo_at(mem, dw.bytes(), i64::from(dw.bytes())));
+                let (m1, m2) = (
+                    self.mo(mem, dw),
+                    self.mo_at(mem, dw.bytes(), i64::from(dw.bytes())),
+                );
                 self.x(InstId::Mov, &[m1, s1]);
                 self.x(InstId::Mov, &[m2, s2]);
             }
             (PairW::F64, true) => {
                 let (d1, d2) = (xo(fpr(first)?), xo(fpr(second)?));
-                self.x(InstId::Movsd, &[d1, mo_at(mem, 8, 0)]);
-                self.x(InstId::Movsd, &[d2, mo_at(mem, 8, 8)]);
+                self.x(InstId::Movsd, &[d1, self.mo_at(mem, 8, 0)]);
+                self.x(InstId::Movsd, &[d2, self.mo_at(mem, 8, 8)]);
             }
             (PairW::F64, false) => {
                 let (s1, s2) = (xo(fpr(first)?), xo(fpr(second)?));
-                self.x(InstId::Movsd, &[mo_at(mem, 8, 0), s1]);
-                self.x(InstId::Movsd, &[mo_at(mem, 8, 8), s2]);
+                self.x(InstId::Movsd, &[self.mo_at(mem, 8, 0), s1]);
+                self.x(InstId::Movsd, &[self.mo_at(mem, 8, 8), s2]);
             }
             (PairW::V128, true) => {
                 let (d1, d2) = (xo(fpr(first)?), xo(fpr(second)?));
-                self.x(InstId::Movdqu, &[d1, mo_at(mem, 16, 0)]);
-                self.x(InstId::Movdqu, &[d2, mo_at(mem, 16, 16)]);
+                self.x(InstId::Movdqu, &[d1, self.mo_at(mem, 16, 0)]);
+                self.x(InstId::Movdqu, &[d2, self.mo_at(mem, 16, 16)]);
             }
             (PairW::V128, false) => {
                 let (s1, s2) = (xo(fpr(first)?), xo(fpr(second)?));
-                self.x(InstId::Movups, &[mo_at(mem, 16, 0), s1]);
-                self.x(InstId::Movups, &[mo_at(mem, 16, 16), s2]);
+                self.x(InstId::Movups, &[self.mo_at(mem, 16, 0), s1]);
+                self.x(InstId::Movups, &[self.mo_at(mem, 16, 16), s2]);
             }
         }
         Ok(())

@@ -1,4 +1,5 @@
 use super::Lbl;
+use crate::ir::Label;
 use std::collections::HashMap;
 
 /// Lowering failure from the shared expansion.
@@ -106,5 +107,14 @@ impl<'a> LabelResolver<'a> {
                 .unwrap_or_else(new_label),
             Lbl::Fresh(i) => *self.fresh.entry(i).or_insert_with(new_label),
         }
+    }
+
+    /// Returns the already-created backend label for the frontend handle `l`,
+    /// or `None` when the handle does not belong to this assembler.
+    ///
+    /// Unlike [`LabelResolver::resolve`], this never creates a label, so it
+    /// can be called from `&self` methods such as operand lowering.
+    pub fn get(&self, l: Label) -> Option<asmkit::Label> {
+        self.labels.get(l.0 as usize).copied()
     }
 }
