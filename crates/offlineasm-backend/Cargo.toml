@@ -18,7 +18,7 @@ name = "offlineasm_backend"
 path = "src/lib.rs"
 
 [dependencies]
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.0" }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.2" }
 syn = { version = "2", features = ["full", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"

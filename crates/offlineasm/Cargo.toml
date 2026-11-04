@@ -12,11 +12,11 @@ rust-version = "1.85"
 
 
 [dependencies]
-offlineasm-macros = { path = "../offlineasm-macros", version = "0.4.0" }
+offlineasm-macros = { path = "../offlineasm-macros", version = "0.4.2" }
 
 [dev-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.0" }
-onlineasm = { path = "../onlineasm", version = "0.4.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.2" }
+onlineasm = { path = "../onlineasm", version = "0.4.2" }
 
 [build-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.0" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.2" }

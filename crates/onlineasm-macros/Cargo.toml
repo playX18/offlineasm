@@ -17,7 +17,7 @@ include = ["/src/**/*", "/README.md", "/LICENSE"]
 proc-macro = true
 
 [dependencies]
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.0" }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.2" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
