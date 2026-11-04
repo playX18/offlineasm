@@ -150,6 +150,33 @@ fn bench_backward(c: &mut Criterion) {
     });
 }
 
+/// One completed image per iteration, through a fresh assembler versus one
+/// reused via `finish(&mut self)`.
+fn bench_reuse(c: &mut Criterion) {
+    let (r, mem_a, mem_b) = setup();
+    let n = iters().min(200);
+    let mut group = c.benchmark_group("image");
+    group.bench_function(format!("fresh/{n}"), |b| {
+        b.iter(|| {
+            for _ in 0..n {
+                let mut asm = Assembler::native();
+                mix(&mut asm, &r, mem_a, mem_b);
+                black_box(asm.finish().unwrap().data().len());
+            }
+        })
+    });
+    let mut asm = Assembler::native();
+    group.bench_function(format!("reused/{n}"), |b| {
+        b.iter(|| {
+            for _ in 0..n {
+                mix(&mut asm, &r, mem_a, mem_b);
+                black_box(asm.finish().unwrap().data().len());
+            }
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_alu,
@@ -157,6 +184,7 @@ criterion_group!(
     bench_branch,
     bench_push,
     bench_mix,
-    bench_backward
+    bench_backward,
+    bench_reuse
 );
 criterion_main!(benches);

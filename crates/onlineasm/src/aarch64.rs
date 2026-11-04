@@ -121,8 +121,27 @@ fn lsl_by(n: u32) -> Operand {
 }
 
 fn e(asm: &mut Assembler, id: InstId, ops: &[Operand]) {
-    let refs: std::vec::Vec<&Operand> = ops.iter().collect();
-    asm.emit_n(id as u32, &refs);
+    // `emit_n` takes `&[&Operand]`. Almost every instruction has a handful
+    // of operands, so build that slice on the stack and keep the hot path
+    // off the heap. Six is asmkit's operand limit.
+    //
+    // Lowering only ever builds operands it has already checked, so release
+    // builds skip asmkit's per-operand validation. Debug builds keep it.
+    let id = id as u32;
+    #[cfg(debug_assertions)]
+    let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n(id, ops);
+    #[cfg(not(debug_assertions))]
+    let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n_unchecked(id, ops);
+    match ops {
+        [a] => emit(asm, &[a]),
+        [a, b] => emit(asm, &[a, b]),
+        [a, b, c] => emit(asm, &[a, b, c]),
+        [a, b, c, d] => emit(asm, &[a, b, c, d]),
+        _ => {
+            let refs: smallvec::SmallVec<[&Operand; 6]> = ops.iter().collect();
+            emit(asm, &refs);
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -300,12 +319,13 @@ pub(crate) fn lower(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<(), LowerError> {
     let mut asm = asmkit::aarch64::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops(&mut asm, ctx, mnemonic, ops, &mut res, abi)
 }
 
@@ -313,12 +333,13 @@ pub(crate) fn lower_patched(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<PatchHandle, LowerError> {
     let mut asm = asmkit::aarch64::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops_patched(&mut asm, ctx, mnemonic, ops, &mut res, abi)
 }
 
@@ -360,12 +381,284 @@ pub fn lower_ops(
             None => r,
         };
     }
+    if try_fast_emit(asm, res, mnemonic, ops) {
+        return Ok(());
+    }
     let insts = expand(mnemonic, ops, ctx, false)?;
     for inst in &insts {
         let handle = emit_inst(asm, mnemonic, inst, res, abi)?;
         debug_assert!(handle.is_none(), "unpatched lowering emitted a patch site");
     }
     Ok(())
+}
+
+/// Emits through asmkit, skipping validation in release builds (lowering
+/// only produces operands it has already checked).
+#[inline]
+fn emit_fast(asm: &mut Assembler, id: u32, ops: &[&Operand]) {
+    #[cfg(debug_assertions)]
+    asm.emit_n(id, ops);
+    #[cfg(not(debug_assertions))]
+    asm.emit_n_unchecked(id, ops);
+}
+
+/// Lowers the simplest mnemonic forms without materialising the IR
+/// expansion, calling asmkit directly instead.
+///
+/// Every arm matches only shapes that lower to the same instruction
+/// sequence as the generic path; anything else falls through to `expand`,
+/// which also produces the diagnostics for invalid operand shapes.
+fn try_fast_emit(asm: &mut Assembler, res: &LabelResolver, mn: Mnemonic, ops: &[Op]) -> bool {
+    match mn {
+        Mnemonic::Nop if ops.is_empty() => {
+            emit_fast(asm, InstId::Nop as u32, &[]);
+            true
+        }
+        Mnemonic::Ret if ops.is_empty() => {
+            let operand = go(x(Gpr(30)));
+            emit_fast(asm, InstId::Ret as u32, &[&operand]);
+            true
+        }
+        Mnemonic::Add(w) => fast_alu(asm, w, AluKind::Add, ops),
+        Mnemonic::Sub(w) => fast_alu(asm, w, AluKind::Sub, ops),
+        Mnemonic::Mul(w) => fast_alu(asm, w, AluKind::Mul, ops),
+        Mnemonic::And(w) => fast_alu(asm, w, AluKind::And, ops),
+        Mnemonic::Or(w) => fast_alu(asm, w, AluKind::Or, ops),
+        Mnemonic::Xor(w) => fast_alu(asm, w, AluKind::Xor, ops),
+        Mnemonic::Move => fast_move(asm, ops),
+        Mnemonic::Load(w) => fast_load_store(asm, w, ops, false),
+        Mnemonic::Store(w) => fast_load_store(asm, w, ops, true),
+        Mnemonic::Jmp => fast_jump(asm, res, ops, false),
+        Mnemonic::Call => fast_jump(asm, res, ops, true),
+        Mnemonic::FlagBranch(flag) => fast_flag_branch(asm, res, flag, ops),
+        Mnemonic::IntBranch { w, cc } => fast_int_branch(asm, res, w, cc, ops),
+        Mnemonic::OpBranch { op, w, flag } => fast_op_branch(asm, res, op, w, flag, ops),
+        _ => false,
+    }
+}
+
+/// Resolves the backend label of a branch target, when it is a label that
+/// already exists in this image.
+#[inline]
+fn branch_label(res: &LabelResolver, op: &Op) -> Option<Label> {
+    match op {
+        Op::Label(Lbl::Bound(h)) => res.get(*h),
+        _ => None,
+    }
+}
+
+fn fast_jump(asm: &mut Assembler, res: &LabelResolver, ops: &[Op], call: bool) -> bool {
+    let [Op::Label(_)] = ops else {
+        return false;
+    };
+    let Some(target) = branch_label(res, &ops[0]) else {
+        return false;
+    };
+    let id = if call { InstId::Bl } else { InstId::B };
+    emit_fast(asm, id as u32, &[target.as_operand()]);
+    true
+}
+
+fn fast_flag_branch(asm: &mut Assembler, res: &LabelResolver, flag: PredFlag, ops: &[Op]) -> bool {
+    let [Op::Label(_)] = ops else {
+        return false;
+    };
+    let Some(target) = branch_label(res, &ops[0]) else {
+        return false;
+    };
+    let id = InstId::B.with_cc(flag_cc(flag).code());
+    emit_fast(asm, id, &[target.as_operand()]);
+    true
+}
+
+fn fast_int_branch(
+    asm: &mut Assembler,
+    res: &LabelResolver,
+    w: Width,
+    cc: IntCc,
+    ops: &[Op],
+) -> bool {
+    if !matches!(w, Width::B32 | Width::B64) {
+        return false;
+    }
+    let [Op::Gpr(lhs), Op::Gpr(rhs), target] = ops else {
+        return false;
+    };
+    let Some(target) = branch_label(res, target) else {
+        return false;
+    };
+    if lhs.0 > 30 || rhs.0 > 30 {
+        return false;
+    }
+    let vw = view(w);
+    let operands = [go(gpr(*lhs, vw)), go(gpr(*rhs, vw))];
+    emit_fast(asm, InstId::Cmp as u32, &[&operands[0], &operands[1]]);
+    let id = InstId::B.with_cc(int_cc(cc).code());
+    emit_fast(asm, id, &[target.as_operand()]);
+    true
+}
+
+fn fast_op_branch(
+    asm: &mut Assembler,
+    res: &LabelResolver,
+    op: FlagAlu,
+    w: Width,
+    flag: PredFlag,
+    ops: &[Op],
+) -> bool {
+    if !matches!(w, Width::B32 | Width::B64) {
+        return false;
+    }
+    let Some((target, leading)) = ops.split_last() else {
+        return false;
+    };
+    let k = match op {
+        FlagAlu::Add => AluKind::Add,
+        FlagAlu::Sub => AluKind::Sub,
+        _ => return false,
+    };
+    let (d, l, r) = match leading {
+        [Op::Gpr(d), Op::Gpr(r)] => (*d, *d, *r),
+        [Op::Gpr(d), Op::Gpr(l), Op::Gpr(r)] => (*d, *l, *r),
+        _ => return false,
+    };
+    let Some(target) = branch_label(res, target) else {
+        return false;
+    };
+    if d.0 > 30 || l.0 > 30 || r.0 > 30 {
+        return false;
+    }
+    let vw = view(w);
+    let operands = [go(gpr(d, vw)), go(gpr(l, vw)), go(gpr(r, vw))];
+    emit_fast(
+        asm,
+        k.id(true) as u32,
+        &[&operands[0], &operands[1], &operands[2]],
+    );
+    let id = InstId::B.with_cc(flag_cc(flag).code());
+    emit_fast(asm, id, &[target.as_operand()]);
+    true
+}
+
+fn fast_alu(asm: &mut Assembler, w: Width, k: AluKind, ops: &[Op]) -> bool {
+    if !matches!(w, Width::B32 | Width::B64) {
+        return false;
+    }
+    let (d, l, r) = match ops {
+        [Op::Gpr(d), Op::Gpr(r)] => (*d, *d, *r),
+        [Op::Gpr(d), Op::Gpr(l), Op::Gpr(r)] => (*d, *l, *r),
+        _ => return false,
+    };
+    if d.0 > 30 || l.0 > 30 || r.0 > 30 {
+        return false;
+    }
+
+    let vw = view(w);
+    let operands = [go(gpr(d, vw)), go(gpr(l, vw)), go(gpr(r, vw))];
+    emit_fast(
+        asm,
+        k.id(false) as u32,
+        &[&operands[0], &operands[1], &operands[2]],
+    );
+    true
+}
+
+fn fast_move(asm: &mut Assembler, ops: &[Op]) -> bool {
+    match ops {
+        [Op::Gpr(d), Op::Gpr(s)] => {
+            if d.0 > 30 || s.0 > 30 {
+                return false;
+            }
+            let operands = [go(x(*d)), go(x(*s))];
+            emit_fast(asm, InstId::Mov as u32, &[&operands[0], &operands[1]]);
+            true
+        }
+        [Op::Gpr(d), Op::Imm(v)] => {
+            if d.0 > 30 {
+                return false;
+            }
+            emit_mov_imm(asm, x(*d), *v);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `movz`/`movn`/`movk` sequence materializing `v` in `reg`.
+fn emit_mov_imm(asm: &mut Assembler, reg: Gp, v: i64) {
+    let wide = is_wide(reg);
+    let uval: u64 = if wide { v as u64 } else { u64::from(v as u32) };
+    let shifts: &[u32] = if wide { &[48, 32, 16, 0] } else { &[16, 0] };
+    let mut ones = 0usize;
+    let mut zeros = 0usize;
+    for &shift in shifts {
+        let chunk = (uval >> shift) & 0xffff;
+        if chunk == 0xffff {
+            ones += 1;
+        } else if chunk == 0 {
+            zeros += 1;
+        }
+    }
+
+    let fill_ones = ones > zeros;
+    let neutral = if fill_ones { 0xffff } else { 0 };
+    let mut first = true;
+    for &shift in shifts {
+        let chunk = (uval >> shift) & 0xffff;
+        if chunk == neutral && (shift != 0 || !first) {
+            continue;
+        }
+        let (id, value) = if first {
+            first = false;
+            if fill_ones {
+                (InstId::Movn, (!chunk) & 0xffff)
+            } else {
+                (InstId::Movz, chunk)
+            }
+        } else {
+            (InstId::Movk, chunk)
+        };
+        let operands = [
+            go(reg),
+            uimm(value),
+            if shift == 0 { uimm(0) } else { lsl_by(shift) },
+        ];
+        let refs = [&operands[0], &operands[1], &operands[2]];
+        let len = if shift == 0 { 2 } else { 3 };
+        emit_fast(asm, id as u32, &refs[..len]);
+    }
+}
+
+fn fast_load_store(asm: &mut Assembler, w: Width, ops: &[Op], store: bool) -> bool {
+    // `load dst, [base + imm]`; `store [base + imm], src`.
+    let (rt, m) = match (store, ops) {
+        (false, [Op::Gpr(rt), Op::Mem(m)]) | (true, [Op::Mem(m), Op::Gpr(rt)]) => (*rt, m),
+        _ => return false,
+    };
+    let Some(base) = m.base.filter(|g| g.0 <= 30) else {
+        return false;
+    };
+    if rt.0 > 30 || m.index.is_some() {
+        return false;
+    }
+    let Disp::Const(disp) = m.disp else {
+        return false;
+    };
+    // Only the unsigned-offset form. Any other displacement falls back to
+    // the generic lowering, which can synthesize an address.
+    let scale = match w {
+        Width::B8 => 1,
+        Width::B16 => 2,
+        Width::B32 => 4,
+        Width::B64 => 8,
+    };
+    if disp < 0 || disp % scale != 0 || disp / scale > 0xFFF {
+        return false;
+    }
+    let id = if store { store_id(w) } else { load_id(w) };
+    let operands = [go(gpr(rt, view(w))), mo(ptr(x(base), disp))];
+    emit_fast(asm, id as u32, &[&operands[0], &operands[1]]);
+    true
 }
 
 pub fn lower_ops_patched(
@@ -1360,44 +1653,7 @@ impl Lx<'_, '_, '_> {
     }
 
     fn mov_imm(&mut self, reg: Gp, v: i64) {
-        let wide = is_wide(reg);
-        let uval: u64 = if wide { v as u64 } else { u64::from(v as u32) };
-        let shifts: &[u32] = if wide { &[48, 32, 16, 0] } else { &[16, 0] };
-        let mut ones = 0usize;
-        let mut zeros = 0usize;
-        for &shift in shifts {
-            let chunk = (uval >> shift) & 0xffff;
-            if chunk == 0xffff {
-                ones += 1;
-            } else if chunk == 0 {
-                zeros += 1;
-            }
-        }
-
-        let fill_ones = ones > zeros;
-        let neutral = if fill_ones { 0xffff } else { 0 };
-        let mut first = true;
-        for &shift in shifts {
-            let chunk = (uval >> shift) & 0xffff;
-            if chunk == neutral && (shift != 0 || !first) {
-                continue;
-            }
-            let (id, value) = if first {
-                first = false;
-                if fill_ones {
-                    (InstId::Movn, (!chunk) & 0xffff)
-                } else {
-                    (InstId::Movz, chunk)
-                }
-            } else {
-                (InstId::Movk, chunk)
-            };
-            if shift == 0 {
-                self.x(id, &[go(reg), uimm(value)]);
-            } else {
-                self.x(id, &[go(reg), uimm(value), lsl_by(shift)]);
-            }
-        }
+        emit_mov_imm(self.asm, reg, v);
     }
 
     /// Fold a whole address (`base + index * scale + disp`) into
@@ -2808,19 +3064,18 @@ impl Lx<'_, '_, '_> {
         let off = |i: usize| crate::ir::aligned_push_offset(n, i) as i32;
         let bytes = bytes as i32;
         let spr = x(SP);
-        // Units from the bottom of the block up: (lower operand, upper operand).
-        let mut units: std::vec::Vec<(usize, Option<usize>)> = std::vec::Vec::new();
-        let mut i = n;
-        while i >= 2 {
-            units.push((i - 1, Some(i - 2)));
-            i -= 2;
-        }
-        if i == 1 {
-            units.push((0, None));
-        }
+        // Units from the bottom of the block up: `(lower operand, upper
+        // operand)`. Computed on demand instead of collected, so a push/pop
+        // group does not allocate.
+        let unit = |k: usize| {
+            let lo = n - 1 - 2 * k;
+            (lo, (lo >= 1).then(|| lo - 1))
+        };
+        let units = n.div_ceil(2);
 
         if push {
-            for (k, &(lo, hi)) in units.iter().enumerate() {
+            for k in 0..units {
+                let (lo, hi) = unit(k);
                 let r_hi = match hi {
                     Some(h) => Some(self.op_to_reg(&ops[h], Width::B64, SCRATCH2)?),
                     None => None,
@@ -2839,7 +3094,8 @@ impl Lx<'_, '_, '_> {
             return Ok(());
         }
 
-        for (k, &(lo, hi)) in units.iter().enumerate().rev() {
+        for k in (0..units).rev() {
+            let (lo, hi) = unit(k);
             let last = k == 0;
             let pair = hi.and_then(|h| match (&ops[lo], &ops[h]) {
                 (Op::Gpr(a), Op::Gpr(b)) if a != b => Some((*a, *b)),

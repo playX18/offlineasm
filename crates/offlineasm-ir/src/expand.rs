@@ -88,11 +88,15 @@ fn check_extern_operands(mn: Mnemonic, ops: &[Op], patch: bool) -> Result<(), Ex
 /// design (it is never in the portable register pool, so it cannot alias
 /// `dst` or the operand bases).
 fn stage_aliasing_mem(insts: &mut Expansion, sc: &Scratch) {
+    // Nearly every expansion is alias-free; checking first avoids moving
+    // every instruction into a fresh `Expansion` on the hot path.
+    if !insts.iter().any(needs_staging) {
+        return;
+    }
     let old = std::mem::take(insts);
     let mut out = Expansion::new();
     for mut inst in old {
-        let loads = stage_one(&mut inst, sc);
-        if let Some(loads) = loads {
+        if let Some(loads) = stage_one(&mut inst, sc) {
             out.extend(loads);
         }
         out.push(inst);
@@ -100,24 +104,73 @@ fn stage_aliasing_mem(insts: &mut Expansion, sc: &Scratch) {
     *insts = out;
 }
 
+/// Reports whether `m` uses `g` as its base or index.
+fn aliases(m: &Mem, g: Gpr) -> bool {
+    m.base == Some(g) || matches!(m.index, Some((idx, _)) if idx == g)
+}
+
+/// Reports whether `dst` is a GPR and any of `operands` is a memory operand
+/// aliasing it.
+fn aliasing_mem<'a>(dst: &Op, operands: impl IntoIterator<Item = &'a Op>) -> bool {
+    let Op::Gpr(g) = *dst else {
+        return false;
+    };
+    operands
+        .into_iter()
+        .any(|op| matches!(op, Op::Mem(m) if aliases(m, g)))
+}
+
+/// Checks whether `inst` has an aliasing memory operand to stage.
+///
+/// This mirrors the patterns of [`stage_one`] without borrowing mutably, so
+/// the common no-staging case can bail out before any rewrite.
+fn needs_staging(inst: &Inst) -> bool {
+    match inst {
+        Inst::Add { op, .. }
+        | Inst::Sub { op, .. }
+        | Inst::Mul { op, .. }
+        | Inst::And { op, .. }
+        | Inst::Or { op, .. }
+        | Inst::Xor { op, .. } => aliasing_mem(&op.dst, [&op.lhs, &op.rhs]),
+        Inst::AluS { alu, .. } => aliasing_mem(&alu.dst, [&alu.lhs, &alu.rhs]),
+        Inst::OpBranch { args, .. } => {
+            let ops = args.as_slice();
+            let Some((dst, srcs)) = ops.split_last() else {
+                return false;
+            };
+            aliasing_mem(dst, srcs.iter())
+        }
+        _ => false,
+    }
+}
+
 /// Collects the staging loads for `inst` and rewrites its aliased operands.
 ///
 /// Returns `None` when `inst` needs no staging.
 fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Expansion> {
-    let (w, operands, dst) = match inst {
+    match inst {
         Inst::Add { w, op }
         | Inst::Sub { w, op }
         | Inst::Mul { w, op }
         | Inst::And { w, op }
         | Inst::Or { w, op }
-        | Inst::Xor { w, op } => (*w, vec![&mut op.lhs, &mut op.rhs], &mut op.dst),
-        Inst::AluS { w, alu, .. } => (*w, vec![&mut alu.lhs, &mut alu.rhs], &mut alu.dst),
+        | Inst::Xor { w, op } => stage_ops(*w, &mut op.dst, [&mut op.lhs, &mut op.rhs], sc),
+        Inst::AluS { w, alu, .. } => stage_ops(*w, &mut alu.dst, [&mut alu.lhs, &mut alu.rhs], sc),
         Inst::OpBranch { w, args, .. } => {
-            let (last, init) = args.as_mut_slice().split_last_mut()?;
-            (*w, init.iter_mut().collect(), last)
+            let (dst, srcs) = args.as_mut_slice().split_last_mut()?;
+            stage_ops(*w, dst, srcs.iter_mut(), sc)
         }
-        _ => return None,
-    };
+        _ => None,
+    }
+}
+
+/// Stages every operand of `inst` that aliases `dst` through `sc`.
+fn stage_ops<'a>(
+    w: Width,
+    dst: &mut Op,
+    operands: impl IntoIterator<Item = &'a mut Op>,
+    sc: &Scratch,
+) -> Option<Expansion> {
     let Op::Gpr(g) = *dst else {
         return None;
     };
@@ -128,8 +181,7 @@ fn stage_one(inst: &mut Inst, sc: &Scratch) -> Option<Expansion> {
         let Op::Mem(m) = operand else {
             continue;
         };
-        let aliases = m.base == Some(g) || matches!(m.index, Some((idx, _)) if idx == g);
-        if !aliases {
+        if !aliases(m, g) {
             continue;
         }
         // At most two memory operands can alias `dst` (op-branch takes
@@ -1114,6 +1166,7 @@ fn vmove_node(mn: Mnemonic, ops: &[Op], store: bool) -> Result<Inst, ExpandError
 /// [`ExpandError::BadOperand`] if `mnemonic` is `PushCalleeSaves` or
 /// `PopCalleeSaves` and `ops` contains a non-GPR operand or a GPR whose
 /// number is not in `saved`.
+#[inline]
 pub fn check_callee_saved(mnemonic: Mnemonic, ops: &[Op], saved: &[u8]) -> Result<(), ExpandError> {
     if !matches!(
         mnemonic,

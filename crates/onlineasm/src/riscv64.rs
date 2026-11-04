@@ -217,13 +217,14 @@ pub(crate) fn lower(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<(), LowerError> {
     let _ = abi;
     let mut asm = asmkit::riscv::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops(&mut asm, ctx, mnemonic, ops, &mut res)
 }
 
@@ -231,13 +232,14 @@ pub(crate) fn lower_patched(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<PatchHandle, LowerError> {
     let _ = abi;
     let mut asm = asmkit::riscv::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops_patched(&mut asm, ctx, mnemonic, ops, &mut res)
 }
 
@@ -334,8 +336,28 @@ impl Lx<'_, '_, '_> {
     }
 
     fn e(&mut self, op: Opcode, ops: &[Operand]) {
-        let refs: Vec<&Operand> = ops.iter().collect();
-        self.asm.emit_n(op as i64, &refs);
+        // `emit_n` takes `&[&Operand]`. Almost every instruction has a
+        // handful of operands, so build that slice on the stack and keep
+        // the hot path off the heap. Six is asmkit's operand limit.
+        //
+        // Lowering only ever builds operands it has already checked, so
+        // release builds skip asmkit's per-operand validation.
+        let op = op as i64;
+        #[cfg(debug_assertions)]
+        let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n(op, ops);
+        #[cfg(not(debug_assertions))]
+        let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n_unchecked(op, ops);
+        let asm = &mut *self.asm;
+        match ops {
+            [a] => emit(asm, &[a]),
+            [a, b] => emit(asm, &[a, b]),
+            [a, b, c] => emit(asm, &[a, b, c]),
+            [a, b, c, d] => emit(asm, &[a, b, c, d]),
+            _ => {
+                let refs: smallvec::SmallVec<[&Operand; 6]> = ops.iter().collect();
+                emit(asm, &refs);
+            }
+        }
     }
 
     /// `op rd, rs1, rs2`.

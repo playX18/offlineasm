@@ -58,6 +58,40 @@
 //! # }
 //! ```
 //!
+//! ## Reusing an assembler
+//!
+//! [`Assembler::finish`] leaves the assembler ready for the next image (it
+//! clears the code buffer but keeps its allocations), so a JIT that compiles
+//! many small functions can build them through one assembler:
+//!
+//! ```
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use onlineasm::{onlineasm, Assembler, JitAllocator};
+//!
+//! let mut asm = Assembler::native();
+//! let mut jit = JitAllocator::new(Default::default());
+//! for value in [41u64, 42] {
+//!     onlineasm!(asm;
+//!         =>entry;
+//!         move t0, {value};
+//!         ret;
+//!     );
+//!     let code = asm.finish()?;
+//!     let entry = code.offset(entry).ok_or("entry is unbound")?;
+//!     let span = code.allocate(&mut jit)?;
+//!     let f: extern "C" fn() -> u64 =
+//!         unsafe { std::mem::transmute(span.rx().add(entry as usize)) };
+//!     assert_eq!(f(), value);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`Assembler::reset`] discards a partially assembled image instead of
+//! finalizing it. Handles from a finished or discarded image stay valid
+//! through [`Finished`], but must not be used to emit further code; label and
+//! virtual-patch handles from an earlier image are rejected by the next one.
+//!
 //! ## External symbols
 //!
 //! Generated code references host functions and data by [`ExternalName`]
@@ -314,13 +348,21 @@ impl std::fmt::Display for Target {
     }
 }
 
-pub(crate) type LowerFn =
-    fn(&mut CodeBuffer, &Scratch, &[asmkit::Label], Mnemonic, &[Op], Abi) -> Result<(), LowerError>;
+pub(crate) type LowerFn = fn(
+    &mut CodeBuffer,
+    &Scratch,
+    &[asmkit::Label],
+    u32,
+    Mnemonic,
+    &[Op],
+    Abi,
+) -> Result<(), LowerError>;
 
 pub(crate) type LowerPatchedFn = fn(
     &mut CodeBuffer,
     &Scratch,
     &[asmkit::Label],
+    u32,
     Mnemonic,
     &[Op],
     Abi,
@@ -344,6 +386,7 @@ fn lookup_fpr(table: &[(u16, Fpr)], id: u16) -> Option<Fpr> {
     table.iter().find(|&&(i, _)| i == id).map(|&(_, v)| v)
 }
 
+#[inline]
 fn reject_offlineasm_only(mnemonic: Mnemonic, ops: &[Op]) -> Result<(), LowerError> {
     let bad = |msg: &str| LowerError::BadOperand {
         mnemonic: mnemonic.as_str().to_string(),
@@ -484,6 +527,9 @@ pub struct Assembler<const BACKWARD: bool = false> {
     buf: CodeBuffer,
     ctx: Scratch,
     labels: Vec<asmkit::Label>,
+    /// Handle number of `labels[0]`. It only grows across [`reset`](Self::reset)
+    /// so handles from a previous image cannot name a label in a later one.
+    label_base: u32,
     externs: Vec<(ExternalName, Extern)>,
     abi: Abi,
     tape: backward::ReverseTape,
@@ -511,6 +557,7 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
             buf: CodeBuffer::new(options.environment),
             ctx: info.scratch,
             labels: Vec::new(),
+            label_base: 0,
             externs: Vec::new(),
             abi: options.abi,
             tape: backward::ReverseTape::new(),
@@ -660,12 +707,16 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
     fn label_forward(&mut self) -> Label {
         let l = self.buf.get_label();
         self.labels.push(l);
-        Label(self.labels.len() as u32 - 1)
+        Label(self.label_base.saturating_add(self.labels.len() as u32 - 1))
     }
 
     #[allow(clippy::panic)]
     fn asm_label(&self, label: Label) -> asmkit::Label {
-        match self.labels.get(label.0 as usize) {
+        match label
+            .0
+            .checked_sub(self.label_base)
+            .and_then(|i| self.labels.get(i as usize))
+        {
             Some(&l) => l,
             None => panic!("onlineasm: label handle does not belong to this assembler"),
         }
@@ -966,6 +1017,7 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
             &mut self.buf,
             &self.ctx,
             &self.labels,
+            self.label_base,
             mnemonic,
             ops,
             self.abi,
@@ -1066,6 +1118,7 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
             &mut self.buf,
             &self.ctx,
             &self.labels,
+            self.label_base,
             mnemonic,
             ops,
             self.abi,
@@ -1074,20 +1127,52 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
 
     /// Finalizes the buffer, reporting offsets for `labels` in order.
     /// `virtual_patches` resolves backward handles in [`Finished::location`].
+    ///
+    /// `label_base` and `patch_base` are the first handle numbers of this
+    /// image, so [`Finished`] can reject handles from an earlier image.
     fn finalize(
-        mut self,
+        &mut self,
         labels: &[asmkit::Label],
+        label_base: u32,
+        patch_base: u32,
         virtual_patches: Vec<PatchHandle>,
     ) -> Result<Finished, AsmError> {
         self.buf.emit_island(u32::MAX)?;
-        let inner = self.buf.finish()?;
+        // `finish_owned` moves the recordings out instead of cloning them.
+        let inner = self.buf.finish_owned()?;
         let offsets: Vec<u32> = labels.iter().map(|l| inner.label_offset(*l)).collect();
+        // Reset the (now empty) buffer so the next image starts clean.
+        self.buf.clear();
         Ok(Finished {
-            inner,
+            // The finalized image is several kilobytes because of its inline
+            // `SmallVec`s; keep it behind a pointer so moving `Finished` out
+            // of `finish()` does not copy it.
+            inner: Box::new(inner),
             offsets,
+            label_base,
+            patch_base,
             linked: false,
             virtual_patches,
         })
+    }
+
+    /// Discards the code assembled so far and resets the assembler for the
+    /// next image, retaining buffer capacity.
+    ///
+    /// [`finish`](Assembler::finish) already does this on success; call
+    /// `reset` to throw away a partially assembled image instead.
+    ///
+    /// Handles from the discarded image must not be used again. Label and
+    /// virtual-patch handles are rejected because handle numbers only grow
+    /// across resets; raw [`PatchHandle::Jump`]/[`PatchHandle::Data`] handles
+    /// from [`emit_patched`](Assembler::emit_patched) carry asmkit offsets and
+    /// must not be carried across a reset either.
+    pub fn reset(&mut self) {
+        self.label_base = self.label_base.saturating_add(self.labels.len() as u32);
+        self.buf.clear();
+        self.labels.clear();
+        self.externs.clear();
+        self.tape.reset();
     }
 }
 
@@ -1113,12 +1198,22 @@ impl Assembler<false> {
 
     /// Finalizes the code buffer.
     ///
+    /// On success the assembler is reset ([`reset`](Assembler::reset)) and can
+    /// assemble another image without reallocating its buffer. Label and patch
+    /// handles from this image stay valid through [`Finished`], but must not be
+    /// used to emit further code.
+    ///
     /// # Errors
     ///
-    /// Returns an error if finalization fails.
-    pub fn finish(mut self) -> Result<Finished, AsmError> {
+    /// Returns an error if finalization fails. The assembler is reset either
+    /// way.
+    pub fn finish(&mut self) -> Result<Finished, AsmError> {
         let labels = std::mem::take(&mut self.labels);
-        self.finalize(&labels, Vec::new())
+        let res = self.finalize(&labels, self.label_base, 0, Vec::new());
+        // Put the label allocation back so `reset` can keep it for reuse.
+        self.labels = labels;
+        self.reset();
+        res
     }
 }
 
@@ -1148,24 +1243,43 @@ impl Assembler<true> {
     /// Virtual labels created while recording resolve onto the replayed code,
     /// and [`Finished::offset`] has them afterwards.
     ///
+    /// On success the assembler is reset ([`reset`](Assembler::reset)) and can
+    /// record another image. Handles from this image stay valid through
+    /// [`Finished`], but must not be used to record further code.
+    ///
     /// # Errors
     ///
     /// Returns [`BackwardFinishError::Lower`] when a recorded call fails to
-    /// lower, or [`BackwardFinishError::Finalize`] when finalization fails.
+    /// lower, or [`BackwardFinishError::Finalize`] when finalization fails. The
+    /// assembler is reset either way.
     ///
     /// # Panics
     ///
     /// Panics if a recorded operand names a label from another assembler.
-    pub fn finish(mut self) -> Result<Finished, BackwardFinishError> {
+    pub fn finish(&mut self) -> Result<Finished, BackwardFinishError> {
+        let res = self.replay();
+        self.reset();
+        res
+    }
+
+    fn replay(&mut self) -> Result<Finished, BackwardFinishError> {
         let virtual_count = self.tape.virtual_count();
         let patch_count = self.tape.patch_count();
-        let items = self.tape.take();
+        let virtual_base = self.tape.virtual_base();
+        let patch_base = self.tape.patch_base();
+        let mut items = self.tape.take();
         // Embedded constants always land in the island, wherever the call
         // sits on the tape, so declare them first.
         let mut embedded: Vec<Option<&[u8]>> = vec![None; virtual_count as usize];
         for item in &items {
             if let backward::TapeItem::Embed { data, label } = item {
-                embedded[label.0 as usize] = Some(data);
+                if let Some(index) = label
+                    .0
+                    .checked_sub(virtual_base)
+                    .and_then(|i| usize::try_from(i).ok())
+                {
+                    embedded[index] = Some(data);
+                }
             }
         }
         let mut real: Vec<Label> = Vec::with_capacity(virtual_count as usize);
@@ -1177,38 +1291,39 @@ impl Assembler<true> {
         }
 
         let mut patches: Vec<PatchHandle> = Vec::with_capacity(patch_count as usize);
-        for (position, item) in items.iter().rev().enumerate() {
-            let index = items.len() - 1 - position;
+        let items_len = items.len();
+        for (position, item) in items.iter_mut().rev().enumerate() {
+            let index = items_len - 1 - position;
             match item {
                 backward::TapeItem::Emit { mnemonic, ops } => {
-                    let ops = backward::remap_ops(ops, &real);
-                    self.emit_forward(*mnemonic, &ops)
+                    backward::remap_ops(ops, &real, virtual_base);
+                    self.emit_forward(*mnemonic, ops)
                         .map_err(|source| BackwardFinishError::Lower { index, source })?;
                 }
                 backward::TapeItem::EmitPatched { mnemonic, ops } => {
-                    let ops = backward::remap_ops(ops, &real);
+                    backward::remap_ops(ops, &real, virtual_base);
                     let handle = self
-                        .emit_forward_patched(*mnemonic, &ops)
+                        .emit_forward_patched(*mnemonic, ops)
                         .map_err(|source| BackwardFinishError::Lower { index, source })?;
                     patches.push(handle);
                 }
                 backward::TapeItem::Bind(v) => {
-                    self.bind_forward(backward::remap_label(*v, &real));
+                    self.bind_forward(backward::remap_label(*v, &real, virtual_base));
                 }
                 backward::TapeItem::Align(alignment) => self.align_forward(*alignment),
                 backward::TapeItem::Embed { .. } => {}
                 backward::TapeItem::Data { data, label, align } => {
                     self.align_data_forward(*align);
                     if let Some(v) = label {
-                        self.bind_forward(backward::remap_label(*v, &real));
+                        self.bind_forward(backward::remap_label(*v, &real, virtual_base));
                     }
                     self.emit_data_forward(data);
                 }
             }
         }
         patches.reverse();
-        let labels: Vec<asmkit::Label> = real.iter().map(|r| self.labels[r.0 as usize]).collect();
-        self.finalize(&labels, patches)
+        let labels: Vec<asmkit::Label> = real.iter().map(|r| self.asm_label(*r)).collect();
+        self.finalize(&labels, virtual_base, patch_base, patches)
             .map_err(BackwardFinishError::Finalize)
     }
 }
@@ -1251,8 +1366,12 @@ impl std::error::Error for BackwardFinishError {
 
 /// A finalized machine-code image plus the offsets of the labels.
 pub struct Finished {
-    inner: CodeBufferFinalized,
+    inner: Box<CodeBufferFinalized>,
     offsets: Vec<u32>,
+    /// First label handle of this image (see [`Assembler::reset`]).
+    label_base: u32,
+    /// First virtual patch handle of this image.
+    patch_base: u32,
     linked: bool,
     virtual_patches: Vec<PatchHandle>,
 }
@@ -1283,7 +1402,8 @@ impl Finished {
     /// Returns the final byte offset of a label, or `None` when it was never
     /// bound or belongs to another image.
     pub fn offset(&self, label: Label) -> Option<u32> {
-        match self.offsets.get(label.0 as usize) {
+        let index = label.0.checked_sub(self.label_base)? as usize;
+        match self.offsets.get(index) {
             Some(&off) if off != u32::MAX => Some(off),
             _ => None,
         }
@@ -1302,7 +1422,10 @@ impl Finished {
             return None;
         }
         let real = match handle {
-            PatchHandle::Virtual(id) => *self.virtual_patches.get(id as usize)?,
+            PatchHandle::Virtual(id) => {
+                let index = id.checked_sub(self.patch_base)? as usize;
+                *self.virtual_patches.get(index)?
+            }
             real => real,
         };
         Some(match real {
@@ -1361,15 +1484,17 @@ impl Finished {
         let mut linker = asmkit::Linker::new();
         let mut any = false;
         for image in images {
-            linker.add_buffer(image.inner);
+            linker.add_buffer(*image.inner);
             any = true;
         }
         if !any {
             return Err(AsmError::NoCodeGenerated);
         }
         Ok(Finished {
-            inner: linker.link()?,
+            inner: Box::new(linker.link()?),
             offsets: Vec::new(),
+            label_base: 0,
+            patch_base: 0,
             linked: true,
             virtual_patches: Vec::new(),
         })

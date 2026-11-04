@@ -1,6 +1,6 @@
 use super::Lbl;
 use crate::ir::Label;
-use std::collections::HashMap;
+use smallvec::SmallVec;
 
 /// Lowering failure from the shared expansion.
 pub use offlineasm_ir::ExpandError as LowerError;
@@ -84,15 +84,21 @@ impl PatchHandle {
 /// Resolves IR labels to backend labels, creating fresh ones on demand.
 pub struct LabelResolver<'a> {
     labels: &'a [asmkit::Label],
-    fresh: HashMap<u32, asmkit::Label>,
+    /// Handle number of `labels[0]` (see [`crate::Assembler::reset`]).
+    base: u32,
+    // A handful of virtual labels at most, and usually none. A `HashMap`
+    // here pays for hashing and thread-local state on every instruction.
+    fresh: SmallVec<[(u32, asmkit::Label); 2]>,
 }
 
 impl<'a> LabelResolver<'a> {
-    /// Creates a resolver over the bound `labels`.
-    pub fn new(labels: &'a [asmkit::Label]) -> Self {
+    /// Creates a resolver over the bound `labels`, whose first handle is
+    /// `base`.
+    pub fn new(labels: &'a [asmkit::Label], base: u32) -> Self {
         Self {
             labels,
-            fresh: HashMap::new(),
+            base,
+            fresh: SmallVec::new(),
         }
     }
 
@@ -100,12 +106,20 @@ impl<'a> LabelResolver<'a> {
     /// the handle has no label yet.
     pub fn resolve(&mut self, l: Lbl, new_label: impl FnOnce() -> asmkit::Label) -> asmkit::Label {
         match l {
-            Lbl::Bound(h) => self
-                .labels
-                .get(h.0 as usize)
-                .copied()
-                .unwrap_or_else(new_label),
-            Lbl::Fresh(i) => *self.fresh.entry(i).or_insert_with(new_label),
+            Lbl::Bound(h) => {
+                h.0.checked_sub(self.base)
+                    .and_then(|i| self.labels.get(i as usize))
+                    .copied()
+                    .unwrap_or_else(new_label)
+            }
+            Lbl::Fresh(i) => {
+                if let Some(pos) = self.fresh.iter().position(|&(id, _)| id == i) {
+                    return self.fresh[pos].1;
+                }
+                let label = new_label();
+                self.fresh.push((i, label));
+                label
+            }
         }
     }
 
@@ -115,6 +129,8 @@ impl<'a> LabelResolver<'a> {
     /// Unlike [`LabelResolver::resolve`], this never creates a label, so it
     /// can be called from `&self` methods such as operand lowering.
     pub fn get(&self, l: Label) -> Option<asmkit::Label> {
-        self.labels.get(l.0 as usize).copied()
+        l.0.checked_sub(self.base)
+            .and_then(|i| self.labels.get(i as usize))
+            .copied()
     }
 }

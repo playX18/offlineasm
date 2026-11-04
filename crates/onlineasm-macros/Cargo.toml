@@ -6,7 +6,7 @@ description = "onlineasm! proc macro: offlineasm syntax over the typed mnemonic 
 license = "BSD-3-Clause"
 authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
 
-repository = "https://codeberg.org/playxe/offlineasm"
+repository.workspace = true
 documentation = "https://docs.rs/onlineasm-macros"
 keywords = ["assembler", "jit", "portable"]
 categories = ["development-tools"]
@@ -17,7 +17,7 @@ include = ["/src/**/*", "/README.md", "/LICENSE"]
 proc-macro = true
 
 [dependencies]
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.3.2" }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.0" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }

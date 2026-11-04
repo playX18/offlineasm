@@ -5,18 +5,18 @@ edition = "2021"
 description = "Portable assembler for Rust"
 license = "BSD-3-Clause"
 authors = ["Adel Prokurov <adel.prokurov@gmail.com>"]
-repository = "https://codeberg.org/playxe/offlineasm"
+repository.workspace = true
 documentation = "https://docs.rs/offlineasm"
 keywords = ["assembler", "jit", "portable"]
 rust-version = "1.85"
 
 
 [dependencies]
-offlineasm-macros = { path = "../offlineasm-macros", version = "0.3.2" }
+offlineasm-macros = { path = "../offlineasm-macros", version = "0.4.0" }
 
 [dev-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.2" }
-onlineasm = { path = "../onlineasm", version = "0.3.2" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.0" }
+onlineasm = { path = "../onlineasm", version = "0.4.0" }
 
 [build-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.3.2" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.0" }

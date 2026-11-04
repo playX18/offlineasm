@@ -14,7 +14,6 @@ use crate::ir::{
 use asmkit::x86::CondCode;
 use asmkit::x86::*;
 use asmkit::{imm, Label, Operand, OperandCast, PatchableJump, Sym};
-use std::vec::Vec;
 
 type AMem = asmkit::x86::Mem;
 
@@ -137,8 +136,27 @@ fn rsp_mem(disp: i32, size: u32) -> Operand {
 }
 
 fn e(asm: &mut Assembler, id: InstId, ops: &[Operand]) {
-    let refs: Vec<&Operand> = ops.iter().collect();
-    asm.emit_n(id as u32, &refs);
+    // `emit_n` takes `&[&Operand]`. Almost every instruction has a handful
+    // of operands, so build that slice on the stack and keep the hot path
+    // off the heap. Six is asmkit's operand limit.
+    //
+    // Lowering only ever builds operands it has already checked, so release
+    // builds skip asmkit's per-operand validation. Debug builds keep it.
+    let id = id as u32;
+    #[cfg(debug_assertions)]
+    let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n(id, ops);
+    #[cfg(not(debug_assertions))]
+    let emit = |asm: &mut Assembler, ops: &[&Operand]| asm.emit_n_unchecked(id, ops);
+    match ops {
+        [a] => emit(asm, &[a]),
+        [a, b] => emit(asm, &[a, b]),
+        [a, b, c] => emit(asm, &[a, b, c]),
+        [a, b, c, d] => emit(asm, &[a, b, c, d]),
+        _ => {
+            let refs: smallvec::SmallVec<[&Operand; 6]> = ops.iter().collect();
+            emit(asm, &refs);
+        }
+    }
 }
 
 fn e_lock(asm: &mut Assembler, id: InstId, ops: &[Operand]) {
@@ -322,12 +340,13 @@ pub(crate) fn lower(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<(), LowerError> {
     let mut asm = asmkit::x86::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops(&mut asm, ctx, mnemonic, ops, &mut res, abi)
 }
 
@@ -335,12 +354,13 @@ pub(crate) fn lower_patched(
     buf: &mut CodeBuffer,
     ctx: &Scratch,
     labels: &[asmkit::Label],
+    label_base: u32,
     mnemonic: Mnemonic,
     ops: &[Op],
     abi: crate::Abi,
 ) -> Result<PatchHandle, LowerError> {
     let mut asm = asmkit::x86::Assembler::new(buf);
-    let mut res = LabelResolver::new(labels);
+    let mut res = LabelResolver::new(labels, label_base);
     lower_ops_patched(&mut asm, ctx, mnemonic, ops, &mut res, abi)
 }
 
