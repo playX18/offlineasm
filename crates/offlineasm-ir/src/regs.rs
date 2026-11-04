@@ -40,6 +40,11 @@ pub const GPRS: &[&str] = &[
     "csr8",
     "csr9",
     "csr10",
+    // AArch64 scratch-pool GPRs (`t13`-`t15` map to `x13`-`x15`). Appended at
+    // the end so every pre-existing vreg id stays stable.
+    "t13",
+    "t14",
+    "t15",
     "invalidGPR",
 ];
 
@@ -47,6 +52,11 @@ pub const GPRS: &[&str] = &[
 pub const FPRS: &[&str] = &[
     "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "csfr0", "csfr1", "csfr2", "csfr3",
     "csfr4", "csfr5", "csfr6", "csfr7", "csfr8", "csfr9", "csfr10", "csfr11",
+    // x86 `ft8`-`ft15` map to `xmm8`-`xmm15`. Appended so existing ids stay
+    // stable.
+    "ft8", "ft9", "ft10", "ft11", "ft12", "ft13", "ft14", "ft15",
+    // AArch64 64-bit views of `v8`-`v15` (the callee-saved `csfr0`-`csfr7`).
+    "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15",
 ];
 
 /// Lists every portable vector register spelling and lane alias.
@@ -55,6 +65,9 @@ pub const VECS: &[&str] = &[
     "v2_h", "v2_i", "v2_q", "v3", "v3_b", "v3_h", "v3_i", "v3_q", "v4", "v4_b", "v4_h", "v4_i",
     "v4_q", "v5", "v5_b", "v5_h", "v5_i", "v5_q", "v6", "v6_b", "v6_h", "v6_i", "v6_q", "v7",
     "v7_b", "v7_h", "v7_i", "v7_q",
+    // Caller-saved AArch64 vector registers the Tier 2 pool uses. Appended so
+    // existing vector ids stay stable.
+    "v24", "v25", "v26", "v27", "v28", "v29", "v30",
 ];
 
 /// Counts the entries of [`GPRS`].
@@ -383,6 +396,14 @@ const X86_REGS: &[RegInfo] = &[
     RegInfo::fpr("ft5"),
     RegInfo::fpr("ft6"),
     RegInfo::fpr("ft7"),
+    RegInfo::fpr("ft8"),
+    RegInfo::fpr("ft9"),
+    RegInfo::fpr("ft10"),
+    RegInfo::fpr("ft11"),
+    RegInfo::fpr("ft12"),
+    RegInfo::fpr("ft13"),
+    RegInfo::fpr("ft14"),
+    RegInfo::fpr("ft15"),
 ];
 
 const X86_VREG_GPR: &[(u16, Gpr)] = &[
@@ -454,6 +475,14 @@ const X86_VREG_FPR: &[(u16, Fpr)] = &[
     (fpr_id_const("v7_h"), Fpr(7)),
     (fpr_id_const("v7_i"), Fpr(7)),
     (fpr_id_const("v7_q"), Fpr(7)),
+    (fpr_id_const("ft8"), Fpr(8)),
+    (fpr_id_const("ft9"), Fpr(9)),
+    (fpr_id_const("ft10"), Fpr(10)),
+    (fpr_id_const("ft11"), Fpr(11)),
+    (fpr_id_const("ft12"), Fpr(12)),
+    (fpr_id_const("ft13"), Fpr(13)),
+    (fpr_id_const("ft14"), Fpr(14)),
+    (fpr_id_const("ft15"), Fpr(15)),
 ];
 
 const AARCH64_REGS: &[RegInfo] = &[
@@ -470,6 +499,9 @@ const AARCH64_REGS: &[RegInfo] = &[
     RegInfo::gpr("t10"),
     RegInfo::gpr("t11"),
     RegInfo::gpr("t12"),
+    RegInfo::gpr("t13"),
+    RegInfo::gpr("t14"),
+    RegInfo::gpr("t15"),
     RegInfo::gpr("csr0"),
     RegInfo::gpr("csr1"),
     RegInfo::gpr("csr2"),
@@ -500,6 +532,21 @@ const AARCH64_REGS: &[RegInfo] = &[
     RegInfo::fpr("csfr5"),
     RegInfo::fpr("csfr6"),
     RegInfo::fpr("csfr7"),
+    RegInfo::fpr("d8"),
+    RegInfo::fpr("d9"),
+    RegInfo::fpr("d10"),
+    RegInfo::fpr("d11"),
+    RegInfo::fpr("d12"),
+    RegInfo::fpr("d13"),
+    RegInfo::fpr("d14"),
+    RegInfo::fpr("d15"),
+    RegInfo::fpr("v24"),
+    RegInfo::fpr("v25"),
+    RegInfo::fpr("v26"),
+    RegInfo::fpr("v27"),
+    RegInfo::fpr("v28"),
+    RegInfo::fpr("v29"),
+    RegInfo::fpr("v30"),
 ];
 
 const AARCH64_VREG_GPR: &[(u16, Gpr)] = &[
@@ -516,6 +563,9 @@ const AARCH64_VREG_GPR: &[(u16, Gpr)] = &[
     (gpr_id_const("t10"), Gpr(10)),
     (gpr_id_const("t11"), Gpr(11)),
     (gpr_id_const("t12"), Gpr(12)),
+    (gpr_id_const("t13"), Gpr(13)),
+    (gpr_id_const("t14"), Gpr(14)),
+    (gpr_id_const("t15"), Gpr(15)),
     (gpr_id_const("csr0"), Gpr(19)),
     (gpr_id_const("csr1"), Gpr(20)),
     (gpr_id_const("csr2"), Gpr(21)),
@@ -589,6 +639,21 @@ const AARCH64_VREG_FPR: &[(u16, Fpr)] = &[
     (fpr_id_const("v7_h"), Fpr(23)),
     (fpr_id_const("v7_i"), Fpr(23)),
     (fpr_id_const("v7_q"), Fpr(23)),
+    (fpr_id_const("d8"), Fpr(8)),
+    (fpr_id_const("d9"), Fpr(9)),
+    (fpr_id_const("d10"), Fpr(10)),
+    (fpr_id_const("d11"), Fpr(11)),
+    (fpr_id_const("d12"), Fpr(12)),
+    (fpr_id_const("d13"), Fpr(13)),
+    (fpr_id_const("d14"), Fpr(14)),
+    (fpr_id_const("d15"), Fpr(15)),
+    (fpr_id_const("v24"), Fpr(24)),
+    (fpr_id_const("v25"), Fpr(25)),
+    (fpr_id_const("v26"), Fpr(26)),
+    (fpr_id_const("v27"), Fpr(27)),
+    (fpr_id_const("v28"), Fpr(28)),
+    (fpr_id_const("v29"), Fpr(29)),
+    (fpr_id_const("v30"), Fpr(30)),
 ];
 
 const RISCV64_REGS: &[RegInfo] = &[
@@ -741,6 +806,9 @@ pub const t9: VReg = VReg::gpr("t9");
 pub const t10: VReg = VReg::gpr("t10");
 pub const t11: VReg = VReg::gpr("t11");
 pub const t12: VReg = VReg::gpr("t12");
+pub const t13: VReg = VReg::gpr("t13");
+pub const t14: VReg = VReg::gpr("t14");
+pub const t15: VReg = VReg::gpr("t15");
 pub const cfr: VReg = VReg::gpr("cfr");
 pub const sp: VReg = VReg::gpr("sp");
 pub const fp: VReg = VReg::gpr("fp");
@@ -769,6 +837,22 @@ pub const ft4: VReg = VReg::fpr("ft4");
 pub const ft5: VReg = VReg::fpr("ft5");
 pub const ft6: VReg = VReg::fpr("ft6");
 pub const ft7: VReg = VReg::fpr("ft7");
+pub const ft8: VReg = VReg::fpr("ft8");
+pub const ft9: VReg = VReg::fpr("ft9");
+pub const ft10: VReg = VReg::fpr("ft10");
+pub const ft11: VReg = VReg::fpr("ft11");
+pub const ft12: VReg = VReg::fpr("ft12");
+pub const ft13: VReg = VReg::fpr("ft13");
+pub const ft14: VReg = VReg::fpr("ft14");
+pub const ft15: VReg = VReg::fpr("ft15");
+pub const d8: VReg = VReg::fpr("d8");
+pub const d9: VReg = VReg::fpr("d9");
+pub const d10: VReg = VReg::fpr("d10");
+pub const d11: VReg = VReg::fpr("d11");
+pub const d12: VReg = VReg::fpr("d12");
+pub const d13: VReg = VReg::fpr("d13");
+pub const d14: VReg = VReg::fpr("d14");
+pub const d15: VReg = VReg::fpr("d15");
 pub const csfr0: VReg = VReg::fpr("csfr0");
 pub const csfr1: VReg = VReg::fpr("csfr1");
 pub const csfr2: VReg = VReg::fpr("csfr2");
@@ -790,5 +874,5 @@ macro_rules! vec_consts {
 vec_consts!(
     v0, v0_b, v0_h, v0_i, v0_q, v1, v1_b, v1_h, v1_i, v1_q, v2, v2_b, v2_h, v2_i, v2_q, v3, v3_b,
     v3_h, v3_i, v3_q, v4, v4_b, v4_h, v4_i, v4_q, v5, v5_b, v5_h, v5_i, v5_q, v6, v6_b, v6_h, v6_i,
-    v6_q, v7, v7_b, v7_h, v7_i, v7_q,
+    v6_q, v7, v7_b, v7_h, v7_i, v7_q, v24, v25, v26, v27, v28, v29, v30,
 );
