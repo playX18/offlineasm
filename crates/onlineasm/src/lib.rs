@@ -829,7 +829,10 @@ impl<const BACKWARD: bool> Assembler<BACKWARD> {
     fn embed_data_forward(&mut self, data: &[u8]) -> Label {
         let constant = self.buf.add_constant(data.to_vec());
         self.labels.push(self.buf.get_label_for_constant(constant));
-        Label(self.labels.len() as u32 - 1)
+        Label(
+            self.label_base
+                .saturating_add(self.labels.len() as u32 - 1),
+        )
     }
 
     /// Writes `bytes` at the current position as raw data.
