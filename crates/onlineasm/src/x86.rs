@@ -1371,6 +1371,11 @@ impl Lx<'_, '_, '_> {
         if crate::ir::op_eq(lhs, dst) {
             return self.imul2(w, dst, rhs);
         }
+        // Multiplication commutes: with `dst == rhs`, copying `lhs` into
+        // `dst` first would clobber `rhs` and compute `lhs * lhs`.
+        if crate::ir::op_eq(rhs, dst) {
+            return self.imul2(w, dst, lhs);
+        }
         if let Op::Imm(v) = rhs {
             if W::B32.fits(*v) {
                 let d = self.mul_dst(w, dst)?;
