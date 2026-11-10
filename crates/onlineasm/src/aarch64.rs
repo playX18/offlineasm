@@ -2251,9 +2251,19 @@ impl Lx<'_, '_, '_> {
     }
 
     /// PC-relative address of `label` into `xd` (`adrp` + `add :lo12:`).
+    ///
+    /// Emitted with load-time relocations rather than the in-buffer
+    /// `A64AddAbsLo12` fixup, which assumes the image starts on a page: the
+    /// result is correct at any load base.
     fn label_address(&mut self, xd: Gp, l: Lbl) {
         let t = self.label(l);
-        self.asm.load_constant(xd, t);
+        let sym = RelocTarget::Label(t);
+        let rd = xd.id();
+        let buf = self.asm.buffer_mut();
+        buf.add_reloc(Reloc::Aarch64AdrPrelPgHi21, sym.clone(), 0);
+        buf.put4(0x9000_0000 | rd);
+        buf.add_reloc(Reloc::Aarch64AddAbsLo12Nc, sym, 0);
+        buf.put4(0x9100_0000 | rd << 5 | rd);
     }
 
     /// Address of extern `e` into `xd`: `adrp` + `add :lo12:` for a near

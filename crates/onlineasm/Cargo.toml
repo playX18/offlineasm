@@ -27,19 +27,19 @@ name = "onlineasm"
 path = "src/lib.rs"
 
 [dependencies]
-asmkit-rs = { version = "0.8.0", features = ["x86", "aarch64", "riscv", "jit"] }
-offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.2" }
-onlineasm-macros = { path = "../onlineasm-macros", version = "0.4.2" }
+asmkit-rs = { version = "0.8.1", features = ["x86", "aarch64", "riscv", "jit"] }
+offlineasm-ir = { path = "../offlineasm-ir", version = "0.4.5" }
+onlineasm-macros = { path = "../onlineasm-macros", version = "0.4.5" }
 smallvec = "1"
 
 [dev-dependencies]
 capstone = "0.14"
 criterion = "0.5"
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.2" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.5" }
 
 [[bench]]
 name = "emit_mix"
 harness = false
 
 [build-dependencies]
-offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.2" }
+offlineasm-backend = { path = "../offlineasm-backend", version = "0.4.5" }
